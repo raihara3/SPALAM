@@ -1,7 +1,9 @@
 import './style.css';
+import { FeatureDetector } from './FeatureDetector';
 
 declare const cv: any;
 let isOpenCVReady = false;
+let featureDetector: FeatureDetector | null = null;
 
 // カメラストリームの初期化と処理開始
 async function initCamera() {
@@ -43,52 +45,18 @@ async function initCamera() {
       ctx.drawImage(video, 0, 0);
 
       // OpenCVが利用可能であれば特徴点検出を実行
-      if (isOpenCVReady) {
+      if (isOpenCVReady && featureDetector) {
         try {
-          // 画像をOpenCV.jsのMat形式に変換
-          const src = cv.imread(canvas);
-          const gray = new cv.Mat();
-          
-          // グレースケール変換
-          cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+          // 特徴点検出を実行
+          const features = featureDetector.detectFeatures(canvas);
 
-          // 特徴点検出
-          const maxCorners = 100;
-          const qualityLevel = 0.01;
-          const minDistance = 10;
-          const mask = new cv.Mat();
-          const blockSize = 3;
-          const useHarrisDetector = false;
-          const k = 0.04;
-          const points = new cv.Mat();
-
-          cv.goodFeaturesToTrack(
-            gray,              // 入力画像
-            points,           // 出力される特徴点
-            maxCorners,       // 最大検出数
-            qualityLevel,     // 品質レベル
-            minDistance,      // 最小距離
-            mask,            // マスク
-            blockSize,       // ブロックサイズ
-            useHarrisDetector,// Harris検出器を使用するかどうか
-            k                // k値
-          );
-
-          // 検出した特徴点を黒い点で描画
-          for (let i = 0; i < points.rows; i++) {
-            const x = points.data32F[i * 2];
-            const y = points.data32F[i * 2 + 1];
+          // 検出した特徴点を描画
+          features.forEach(({ x, y }) => {
             ctx.fillStyle = '#000000';
             ctx.beginPath();
             ctx.arc(x, y, 3, 0, 2 * Math.PI);
             ctx.fill();
-          }
-
-          // メモリ解放
-          src.delete();
-          gray.delete();
-          points.delete();
-          mask.delete();
+          });
         } catch (error) {
           console.error('OpenCV processing error:', error);
         }
@@ -110,6 +78,7 @@ async function initCamera() {
 (window as any).onOpenCvReady = () => {
   console.log('OpenCV.js is ready');
   isOpenCVReady = true;
+  featureDetector = new FeatureDetector(cv);
 };
 
 // アプリケーション開始
