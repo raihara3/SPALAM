@@ -3,13 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebAR with Three.js</title>
+    <title>WebAR with OpenCV</title>
   </head>
   <body>
     <div id="app">
-      <video id="camera" autoplay playsinline style="display: none;"></video>
-      <canvas id="canvas"></canvas>
+      <video id="camera" autoplay playsinline></video>
+      <canvas id="output"></canvas>
     </div>
     <script type="module" src="/src/main.ts"></script>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="window.onOpenCvReady()"></script>
   </body>
 </html>
