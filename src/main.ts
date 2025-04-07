@@ -47,12 +47,13 @@ async function initCamera() {
       // OpenCVが利用可能であれば特徴点検出を実行
       if (isOpenCVReady && featureDetector) {
         try {
-          // 特徴点検出を実行
-          const features = featureDetector.detectFeatures(canvas);
+          // 特徴点検出と追跡を実行
+          const features = featureDetector.detectAndTrackFeatures(canvas);
 
           // 検出した特徴点を描画
-          features.forEach(({ x, y }) => {
-            ctx.fillStyle = '#000000';
+          features.forEach(({ x, y, trackingCount }) => {
+            // 3フレーム以上追跡できた点は赤、それ以外は黒で描画
+            ctx.fillStyle = trackingCount >= 3 ? '#FF0000' : '#000000';
             ctx.beginPath();
             ctx.arc(x, y, 3, 0, 2 * Math.PI);
             ctx.fill();
