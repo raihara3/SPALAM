@@ -7,6 +7,7 @@ export class ARRenderer {
     private ctx: CanvasRenderingContext2D;
     private threeCanvas: HTMLCanvasElement;
     private featureDetector: FeatureDetector | null = null;
+    private trackedFeature: Feature | null = null;
     
     // Three.js関連
     private scene!: THREE.Scene;
@@ -37,7 +38,6 @@ export class ARRenderer {
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         
-        // 新しいcanvasを使用してレンダラーを初期化
         this.renderer = new THREE.WebGLRenderer({ 
             canvas: this.threeCanvas,
             alpha: true
@@ -46,19 +46,25 @@ export class ARRenderer {
         this.renderer.setClearColor(0x000000, 0);
         
         // 立方体の各面に異なる色を設定
-        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5); // サイズを0.5に変更してより正確な位置合わせを実現
         const materials = [
-            new THREE.MeshBasicMaterial({ color: 0xff0000 }), // 右面 (positive X) - 赤
-            new THREE.MeshBasicMaterial({ color: 0x00ff00 }), // 左面 (negative X) - 緑
-            new THREE.MeshBasicMaterial({ color: 0x0000ff }), // 上面 (positive Y) - 青
-            new THREE.MeshBasicMaterial({ color: 0xffff00 }), // 下面 (negative Y) - 黄
-            new THREE.MeshBasicMaterial({ color: 0x00ffff }), // 前面 (positive Z) - シアン
-            new THREE.MeshBasicMaterial({ color: 0xff00ff })  // 後面 (negative Z) - マゼンタ
+            new THREE.MeshBasicMaterial({ color: 0xff0000 }), // 右面 - 赤
+            new THREE.MeshBasicMaterial({ color: 0x00ff00 }), // 左面 - 緑
+            new THREE.MeshBasicMaterial({ color: 0x0000ff }), // 上面 - 青
+            new THREE.MeshBasicMaterial({ color: 0xffff00 }), // 下面 - 黄
+            new THREE.MeshBasicMaterial({ color: 0x00ffff }), // 前面 - シアン
+            new THREE.MeshBasicMaterial({ color: 0xff00ff })  // 後面 - マゼンタ
         ];
+        // materialを半透明にする
+        materials.forEach(material => {
+            material.transparent = true;
+            material.opacity = 0.7;
+        });
         
         this.cube = new THREE.Mesh(geometry, materials);
         this.scene.add(this.cube);
         
+        // カメラを固定位置に配置
         this.camera.position.z = 5;
 
         // ウィンドウサイズ変更時のイベントリスナー
@@ -66,65 +72,6 @@ export class ARRenderer {
             this.camera.aspect = window.innerWidth / window.innerHeight;
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // デバイスの向きイベントのリスナーを追加
-        this.initDeviceOrientation();
-    }
-
-    private initDeviceOrientation(): void {
-        // デバイスのモーションセンサーが利用可能かチェック
-        if (window.DeviceOrientationEvent) {
-            // iOSの場合は許可が必要
-            if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-                // ユーザーインタラクションが必要なため、ボタンを作成
-                const button = document.createElement('button');
-                button.textContent = 'モーションセンサーを有効にする';
-                button.style.position = 'fixed';
-                button.style.bottom = '20px';
-                button.style.left = '50%';
-                button.style.transform = 'translateX(-50%)';
-                button.style.padding = '10px';
-                button.style.zIndex = '1000';
-                document.body.appendChild(button);
-
-                button.onclick = async () => {
-                    try {
-                        const response = await (DeviceOrientationEvent as any).requestPermission();
-                        if (response === 'granted') {
-                            this.startDeviceOrientationListener();
-                            button.style.display = 'none';
-                        }
-                    } catch (error) {
-                        console.error('モーションセンサーの許可が得られませんでした:', error);
-                    }
-                };
-            } else {
-                // Android等、許可が不要な場合は直接リスナーを開始
-                this.startDeviceOrientationListener();
-            }
-        } else {
-            console.log('デバイスのモーションセンサーは利用できません。自動回転を継続します。');
-        }
-    }
-
-    private startDeviceOrientationListener(): void {
-        window.addEventListener('deviceorientation', (event: DeviceOrientationEvent) => {
-            if (event.beta === null || event.gamma === null || event.alpha === null) return;
-
-            // デバイスの向きを角度（ラジアン）に変換
-            const x = THREE.MathUtils.degToRad(-event.beta + 90); // 前後の傾きを90度手前に倒す
-            const y = THREE.MathUtils.degToRad(event.gamma); // 左右の傾き
-            const z = THREE.MathUtils.degToRad(event.alpha); // 水平面での回転
-
-            // カメラの位置を更新
-            const distance = 5; // カメラと立方体の距離
-            this.camera.position.x = distance * Math.sin(y);
-            this.camera.position.y = distance * Math.sin(x);
-            this.camera.position.z = distance * Math.cos(x) * Math.cos(y);
-
-            // カメラを立方体の中心に向ける
-            this.camera.lookAt(new THREE.Vector3(0, 0, 0));
         });
     }
 
@@ -163,6 +110,82 @@ export class ARRenderer {
         await this.video.play();
     }
 
+    private isFeatureValid(feature: Feature): boolean {
+        // 特徴点が画面内にあるかチェック
+        return feature.x >= 0 && 
+               feature.x <= this.canvas.width && 
+               feature.y >= 0 && 
+               feature.y <= this.canvas.height &&
+               feature.trackingCount >= 3;  // 安定して追跡できているか
+    }
+
+    private findNearestStableFeature(features: Feature[]): Feature | null {
+        // 現在追跡中の特徴点がある場合、その特徴点を探す
+        if (this.trackedFeature) {
+            const currentFeature = features.find(f => 
+                f.id === this.trackedFeature!.id && 
+                this.isFeatureValid(f)
+            );
+            if (currentFeature) {
+                return currentFeature;  // 追跡中の特徴点が見つかった場合はそれを返す
+            }
+            this.trackedFeature = null;  // 特徴点が見つからなかった場合はリセット
+        }
+
+        // 新しい特徴点を探す
+        const centerX = this.canvas.width / 2;
+        const centerY = this.canvas.height / 2;
+        let nearestFeature: Feature | null = null;
+        let minDistance = Infinity;
+
+        features.forEach(feature => {
+            if (this.isFeatureValid(feature)) {
+                const distance = Math.sqrt(
+                    Math.pow(feature.x - centerX, 2) + 
+                    Math.pow(feature.y - centerY, 2)
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearestFeature = feature;
+                }
+            }
+        });
+
+        if (nearestFeature) {
+            this.trackedFeature = nearestFeature;  // 新しい特徴点の追跡を開始
+        }
+
+        return nearestFeature;
+    }
+
+    private updateCubePosition(feature: Feature): void {
+        // キャンバスの座標系をThree.jsの座標系に変換
+        // キャンバスの中心を(0,0)とする
+        const canvasAspectRatio = this.canvas.width / this.canvas.height;
+        const fov = this.camera.fov * (Math.PI / 180);
+        const viewportHeight = 2 * Math.tan(fov / 2) * Math.abs(this.camera.position.z);
+        const viewportWidth = viewportHeight * this.camera.aspect;
+
+        // featureを黄色で描画する
+        this.ctx.fillStyle = '#FFFF00';
+        this.ctx.beginPath();
+        this.ctx.arc(feature.x, feature.y, 5, 0, 2 * Math.PI);
+        this.ctx.fill();
+
+        // 特徴点の座標を正規化（-1 to 1）
+        const normalizedX = (feature.x / this.canvas.width) * 2 - 1;
+        const normalizedY = -(feature.y / this.canvas.height) * 2 + 1;
+
+        // 視野角とアスペクト比を考慮してスケーリング
+        const worldX = normalizedX * (viewportWidth / 2);
+        const worldY = normalizedY * (viewportHeight / 2);
+
+        // キューブの位置を更新
+        this.cube.position.x = worldX;
+        this.cube.position.y = worldY;
+        this.cube.position.z = 0;
+    }
+
     private processFeatures(features: Feature[]): void {
         features.forEach(({ x, y, trackingCount }) => {
             this.ctx.fillStyle = trackingCount >= 3 ? '#FF0000' : '#000000';
@@ -170,6 +193,12 @@ export class ARRenderer {
             this.ctx.arc(x, y, 3, 0, 2 * Math.PI);
             this.ctx.fill();
         });
+
+        // 最も中央に近い安定した特徴点を見つけ、キューブの位置を更新
+        const nearestFeature = this.findNearestStableFeature(features);
+        if (nearestFeature) {
+            this.updateCubePosition(nearestFeature);
+        }
     }
 
     private render(): void {
@@ -186,15 +215,8 @@ export class ARRenderer {
             }
         }
 
-        // Three.jsのアニメーション更新（自動回転を無効化）
-        if (this.cube) {
-            // モーションセンサーを使用する場合は自動回転を無効化
-            if (!window.DeviceOrientationEvent) {
-                this.cube.rotation.x += 0.01;
-                this.cube.rotation.y += 0.01;
-            }
-            this.renderer.render(this.scene, this.camera);
-        }
+        // Three.jsのレンダリング更新
+        this.renderer.render(this.scene, this.camera);
 
         requestAnimationFrame(() => this.render());
     }
