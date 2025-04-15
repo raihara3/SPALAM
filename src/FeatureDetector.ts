@@ -6,7 +6,7 @@ export interface Feature {
 }
 
 export class FeatureDetector {
-  private readonly maxCorners: number = 100;
+  private readonly maxCorners: number = 150;
   private readonly qualityLevel: number = 0.01;
   private readonly minDistance: number = 10;
   private readonly blockSize: number = 3;

@@ -8,6 +8,7 @@ export class ARRenderer {
     private threeCanvas: HTMLCanvasElement;
     private featureDetector: FeatureDetector | null = null;
     private trackedFeature: Feature | null = null;
+    private initialAverageDistance: number | null = null;  // 初期状態の特徴点間の平均距離
     
     // Three.js関連
     private scene!: THREE.Scene;
@@ -46,7 +47,7 @@ export class ARRenderer {
         this.renderer.setClearColor(0x000000, 0);
         
         // 立方体の各面に異なる色を設定
-        const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5); // サイズを0.5に変更してより正確な位置合わせを実現
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
         const materials = [
             new THREE.MeshBasicMaterial({ color: 0xff0000 }), // 右面 - 赤
             new THREE.MeshBasicMaterial({ color: 0x00ff00 }), // 左面 - 緑
@@ -158,7 +159,7 @@ export class ARRenderer {
         return nearestFeature;
     }
 
-    private updateCubePosition(feature: Feature): void {
+    private updateCubePosition(feature: Feature, scale: number): void {
         // キャンバスの座標系をThree.jsの座標系に変換
         // キャンバスの中心を(0,0)とする
         const canvasAspectRatio = this.canvas.width / this.canvas.height;
@@ -184,9 +185,35 @@ export class ARRenderer {
         this.cube.position.x = worldX;
         this.cube.position.y = worldY;
         this.cube.position.z = 0;
+
+        // スケールを適用
+        this.cube.scale.set(scale, scale, scale);
+    }
+
+    private calculateAverageFeatureDistance(features: Feature[]): number {
+        const validFeatures = features.filter(f => this.isFeatureValid(f));
+        if (validFeatures.length < 2) return 0;
+
+        let totalDistance = 0;
+        let pairCount = 0;
+
+        // 全ての有効な特徴点ペアの距離を計算
+        for (let i = 0; i < validFeatures.length; i++) {
+            for (let j = i + 1; j < validFeatures.length; j++) {
+                const distance = Math.sqrt(
+                    Math.pow(validFeatures[i].x - validFeatures[j].x, 2) +
+                    Math.pow(validFeatures[i].y - validFeatures[j].y, 2)
+                );
+                totalDistance += distance;
+                pairCount++;
+            }
+        }
+
+        return pairCount > 0 ? totalDistance / pairCount : 0;
     }
 
     private processFeatures(features: Feature[]): void {
+        // 特徴点の描画
         features.forEach(({ x, y, trackingCount }) => {
             this.ctx.fillStyle = trackingCount >= 3 ? '#FF0000' : '#000000';
             this.ctx.beginPath();
@@ -194,10 +221,27 @@ export class ARRenderer {
             this.ctx.fill();
         });
 
-        // 最も中央に近い安定した特徴点を見つけ、キューブの位置を更新
+        // 平均距離を計算
+        const currentAverageDistance = this.calculateAverageFeatureDistance(features);
+        
+        // 初期状態の距離を保存
+        if (this.initialAverageDistance === null && currentAverageDistance > 0) {
+            this.initialAverageDistance = currentAverageDistance;
+            console.log('Initial average distance set:', this.initialAverageDistance);
+        }
+
+        // 距離の比率を計算して出力
+        let scale = 1;
+        if (this.initialAverageDistance && this.initialAverageDistance > 0) {
+            const distanceRatio = currentAverageDistance / this.initialAverageDistance;
+            scale = Number(distanceRatio.toFixed(2));
+            console.log('Distance ratio:', distanceRatio.toFixed(2));
+        }
+
+        // キューブの位置更新
         const nearestFeature = this.findNearestStableFeature(features);
         if (nearestFeature) {
-            this.updateCubePosition(nearestFeature);
+            this.updateCubePosition(nearestFeature, scale);
         }
     }
 
