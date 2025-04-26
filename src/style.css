@@ -50,7 +50,8 @@ a:hover {
   z-index: 2;
 }
 
-canvas, #output {
+canvas,
+#output {
   position: absolute;
   top: 0;
   left: 0;
