@@ -14,7 +14,7 @@ class SPALAM {
     this.video = null;
   }
 
-  start({ video = null }: { video?: HTMLVideoElement | null } = {}) {
+  public start({ video = null }: { video?: HTMLVideoElement | null } = {}) {
     const setup = async () => {
       if (video) {
         this.video = video;
@@ -25,13 +25,25 @@ class SPALAM {
       }
       console.debug("Video element:", this.video);
       this.video.style.display = "none";
-      this.featureDetector = new FeatureDetector({ cv, video: this.video });
+      this.featureDetector = new FeatureDetector({
+        cv,
+        video: this.video,
+        showFeatures: true,
+      });
+      this.render();
     };
 
     cv.onRuntimeInitialized = () => {
       console.log(cv.getBuildInformation());
       setup();
     };
+  }
+
+  public render() {
+    if (this.featureDetector) {
+      this.featureDetector.render();
+    }
+    requestAnimationFrame(() => this.render());
   }
 }
 
