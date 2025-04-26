@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FeatureDetector, Feature } from "./FeatureDetector";
+import { FeatureDetector, Feature } from "./_FeatureDetector";
 
 export class ARRenderer {
   private video: HTMLVideoElement;
