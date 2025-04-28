@@ -2,6 +2,7 @@
 import cv from "@techstark/opencv-js";
 
 import { FeatureDetector } from "./FeatureDetector";
+import { DepthEstimation } from "./DepthEstimation";
 
 // utils
 import { CameraController } from "./utils/CameraController";
@@ -36,6 +37,18 @@ class SPALAM {
     cv.onRuntimeInitialized = () => {
       console.log(cv.getBuildInformation());
       setup();
+
+      // test --->
+      setTimeout(async () => {
+        const depthEstimation = new DepthEstimation({
+          canvas: this.featureDetector!.canvas,
+          context: this.featureDetector!.ctx,
+          showDepth: true,
+        });
+        await depthEstimation.loadModel();
+        depthEstimation.test();
+      }, 3000);
+      // <-- test
     };
   }
 
