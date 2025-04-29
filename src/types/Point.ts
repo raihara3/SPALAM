@@ -3,3 +3,8 @@ export interface Point3D {
   y: number;
   z: number;
 }
+
+export interface Point2D {
+  u: number;
+  v: number;
+}
