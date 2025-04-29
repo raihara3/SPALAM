@@ -17,6 +17,8 @@ export class FeatureDetector {
   private prevGray: any = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
 
+  trackedFeatures: Feature[] = []; // トラッキングされた特徴点
+
   constructor({
     cv,
     video,
@@ -163,6 +165,7 @@ export class FeatureDetector {
       this.prevGray = gray.clone();
       this.prevFeatures = trackedFeatures;
 
+      this.trackedFeatures = trackedFeatures;
       return trackedFeatures;
     } finally {
       // メモリ解放
@@ -187,5 +190,9 @@ export class FeatureDetector {
       this.ctx.arc(x, y, 3, 0, 2 * Math.PI);
       this.ctx.fill();
     });
+  }
+
+  public getTrackedFeaturePoints(): Feature[] {
+    return this.trackedFeatures;
   }
 }

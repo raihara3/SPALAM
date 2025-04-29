@@ -1,15 +1,20 @@
 // lib
 import cv from "@techstark/opencv-js";
 
+// modules
 import { FeatureDetector } from "./FeatureDetector";
 import { DepthEstimation } from "./DepthEstimation";
 
 // utils
 import { CameraController } from "./utils/CameraController";
 
+// helpers
+import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
+
 class SPALAM {
   video: HTMLVideoElement | null;
   featureDetector: FeatureDetector | null = null;
+  depthEstimation: DepthEstimation | null = null;
 
   constructor() {
     this.video = null;
@@ -24,32 +29,43 @@ class SPALAM {
         await cameraController.initCamera();
         this.video = cameraController.getVideo();
       }
-      console.debug("Video element:", this.video);
       this.video.style.display = "none";
+      console.debug("Video element:", this.video);
+
       this.featureDetector = new FeatureDetector({
         cv,
         video: this.video,
         showFeatures: true,
       });
+
+      this.depthEstimation = new DepthEstimation({
+        canvas: this.featureDetector!.canvas,
+        context: this.featureDetector!.ctx,
+        showDepth: true,
+      });
+      await this.depthEstimation.loadModel();
+
       this.render();
     };
 
-    cv.onRuntimeInitialized = () => {
+    cv.onRuntimeInitialized = async () => {
       console.log(cv.getBuildInformation());
-      setup();
-
-      // test --->
-      setTimeout(async () => {
-        const depthEstimation = new DepthEstimation({
-          canvas: this.featureDetector!.canvas,
-          context: this.featureDetector!.ctx,
-          showDepth: true,
-        });
-        await depthEstimation.loadModel();
-        depthEstimation.test();
-      }, 3000);
-      // <-- test
+      await setup();
+      this.getPoints3D();
     };
+  }
+
+  async getPoints3D() {
+    if (!this.depthEstimation) return;
+    const depthMap = await this.depthEstimation.getDepthMap();
+    if (!depthMap) return;
+    const points3D = sampleDepthAtFeaturePoints({
+      featurePoints: this.featureDetector!.getTrackedFeaturePoints(),
+      depthMap: depthMap,
+      mapWidth: this.featureDetector!.canvas.width,
+      mapHeight: this.featureDetector!.canvas.height,
+    });
+    console.log(points3D);
   }
 
   public render() {

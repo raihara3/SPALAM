@@ -9,6 +9,7 @@ export class DepthEstimation {
   depthCanvas: HTMLCanvasElement;
   depthContext: CanvasRenderingContext2D | null = null;
   isProcessing: boolean = false;
+  depthMap: Float32Array | null = null;
 
   constructor({
     canvas,
@@ -53,7 +54,7 @@ export class DepthEstimation {
     }
   }
 
-  async test() {
+  async getDepthMap() {
     if (!this.model || !this.processor) {
       console.error("Model or processor not loaded");
       return;
@@ -74,27 +75,29 @@ export class DepthEstimation {
     );
     const inputs = await this.processor(image);
     const { predicted_depth } = await this.model(inputs);
-    const data = predicted_depth.data;
+    this.depthMap = predicted_depth.data;
     const [bs, oh, ow] = predicted_depth.dims;
+
+    if (!this.depthMap) return;
 
     let min = Infinity;
     let max = -Infinity;
     this.depthCanvas.width = ow;
     this.depthCanvas.height = oh;
-    for (let i = 0; i < data.length; ++i) {
-      const v = data[i];
+    for (let i = 0; i < this.depthMap.length; ++i) {
+      const v = this.depthMap[i];
       if (v < min) min = v;
       if (v > max) max = v;
     }
     const range = max - min;
 
-    const imageData = new Uint8ClampedArray(4 * data.length);
-    for (let i = 0; i < data.length; ++i) {
+    const imageData = new Uint8ClampedArray(4 * this.depthMap.length);
+    for (let i = 0; i < this.depthMap.length; ++i) {
       const offset = 4 * i;
       imageData[offset] = 255; // Set base color to red
 
       // Set alpha to normalized depth value
-      imageData[offset + 3] = 255 * (1 - (data[i] - min) / range);
+      imageData[offset + 3] = 255 * (1 - (this.depthMap[i] - min) / range);
     }
     const outPixelData = new ImageData(imageData, ow, oh);
     if (this.depthContext) {
@@ -102,5 +105,7 @@ export class DepthEstimation {
     }
 
     this.isProcessing = false;
+
+    return this.depthMap;
   }
 }
