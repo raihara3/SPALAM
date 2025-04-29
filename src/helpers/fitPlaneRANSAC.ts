@@ -16,7 +16,7 @@ import { Point3D, PlaneModel } from "../types";
  */
 function fitPlaneRANSAC({
   points,
-  iterations = 10,
+  iterations = 100,
   threshold = 0.05,
 }: {
   points: Point3D[];
