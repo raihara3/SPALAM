@@ -15,6 +15,7 @@ import backProjectPoints from "./helpers/backProjectPoints";
 import fitPlaneRANSAC from "./helpers/fitPlaneRANSAC";
 import projectInliersToPlane2D from "./helpers/projectInliersToPlane2D";
 import computeConvexHull2D from "./helpers/computeConvexHull2D";
+import liftHull2DTo3D from "./helpers/liftHull2DTo3D";
 
 class SPALAM {
   video: HTMLVideoElement | null;
@@ -105,7 +106,13 @@ class SPALAM {
     });
     // 平面領域を覆う最小ポリゴンの取得
     const hull = computeConvexHull2D(projectedPoints2D);
-    console.log(hull);
+    const hull3D = liftHull2DTo3D({
+      hull2D: hull,
+      P0: P0,
+      uVec: u,
+      vVec: v,
+    });
+    console.log(hull3D);
   }
 
   public render() {
