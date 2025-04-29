@@ -11,6 +11,7 @@ import { CameraController } from "./utils/CameraController";
 // helpers
 import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
 import backProjectPoints from "./helpers/backProjectPoints";
+import fitPlaneRANSAC from "./helpers/fitPlaneRANSAC";
 
 class SPALAM {
   video: HTMLVideoElement | null;
@@ -67,6 +68,9 @@ class SPALAM {
       mapHeight: this.featureDetector!.canvas.height,
     });
     const points3DBackProjected = backProjectPoints(points3D);
+    fitPlaneRANSAC({
+      points: points3DBackProjected,
+    });
     console.log(points3DBackProjected);
   }
 
