@@ -10,6 +10,7 @@ import { CameraController } from "./utils/CameraController";
 
 // helpers
 import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
+import backProjectPoints from "./helpers/backProjectPoints";
 
 class SPALAM {
   video: HTMLVideoElement | null;
@@ -65,7 +66,8 @@ class SPALAM {
       mapWidth: this.featureDetector!.canvas.width,
       mapHeight: this.featureDetector!.canvas.height,
     });
-    console.log(points3D);
+    const points3DBackProjected = backProjectPoints(points3D);
+    console.log(points3DBackProjected);
   }
 
   public render() {
