@@ -7,7 +7,7 @@ export class FeatureDetector {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
 
-  private readonly maxCorners: number = 400; // 最大特徴点数
+  private readonly maxCorners: number = 200; // 最大特徴点数
   private readonly qualityLevel: number = 0.01; // 特徴点の質。小さいほど高品質
   private readonly minDistance: number = 10; // 特徴点間の最小距離。密集するのを防ぐ
   private readonly blockSize: number = 3; // 特徴点検出のための近傍領域のサイズ。奇数である必要がある

@@ -2,6 +2,9 @@
 import * as THREE from "three";
 import cv from "@techstark/opencv-js";
 
+// types
+import { Point2D, Point3D } from "./types";
+
 // modules
 import { FeatureDetector } from "./FeatureDetector";
 import { DepthEstimation } from "./DepthEstimation";
@@ -24,8 +27,11 @@ class SPALAM {
   depthEstimation: DepthEstimation | null = null;
   arRenderer: ARRenderer | null = null;
 
+  group: THREE.Group | null = null;
+
   constructor() {
     this.video = null;
+    this.group = null;
   }
 
   public start({ video = null }: { video?: HTMLVideoElement | null } = {}) {
@@ -61,31 +67,19 @@ class SPALAM {
     cv.onRuntimeInitialized = async () => {
       console.log(cv.getBuildInformation());
       await setup();
-      this.createPlane();
+      this.setGroupPosition();
     };
   }
 
-  public async createPlane() {
-    const { hull2D, hull3D, P0, uVec, vVec, normal } = await this.getPoints3D();
-    if (!hull3D) return;
-    const scene = this.arRenderer!.getScene();
-
-    // 1) hull3DPoints から平面中心とサイズを算出
-    const center = new THREE.Vector3();
-    hull3D.forEach((p) => center.add(p));
-    center.divideScalar(hull3D.length);
-
-    // hull2D から幅・高さの二次元バウンディングボックスを求める
-    const us = hull2D.map((p) => p.u),
-      vs = hull2D.map((p) => p.v);
-    const minU = Math.min(...us),
-      maxU = Math.max(...us);
-    const minV = Math.min(...vs),
-      maxV = Math.max(...vs);
-    const planeWidth = maxU - minU;
-    const planeHeight = maxV - minV;
-
-    // 2) PlaneGeometry を作って回転・平行移動を適用
+  /**
+   * 平面ジオメトリを生成する
+   */
+  private createPlaneGeometries(
+    hull2D: Point2D[],
+    planeWidth: number,
+    planeHeight: number
+  ) {
+    // 通常の平面ジオメトリ
     const planeGeom = new THREE.PlaneGeometry(planeWidth, planeHeight);
     const planeMat = new THREE.MeshBasicMaterial({
       color: 0x8888ff,
@@ -95,39 +89,7 @@ class SPALAM {
     });
     const planeMesh = new THREE.Mesh(planeGeom, planeMat);
 
-    // • 原点を hull2D のバウンディング中心に合わせる
-    //   (凸包2D座標の中心 = ((minU+maxU)/2, (minV+maxV)/2))
-    const midU = (minU + maxU) / 2;
-    const midV = (minV + maxV) / 2;
-    // ローカル平面原点 P0 上の中心点
-    const planeCenter = new THREE.Vector3()
-      .copy(P0)
-      .add(uVec.clone().multiplyScalar(midU))
-      .add(vVec.clone().multiplyScalar(midV));
-    // planeMesh.position.copy(planeCenter);
-    planeMesh.position.copy(center);
-
-    const camera = this.arRenderer!.getCamera();
-    const worldNormal = normal
-      .clone()
-      .normalize()
-      .applyQuaternion(camera.quaternion);
-    const q = new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 0, 1),
-      worldNormal
-    );
-    const basis = new THREE.Matrix4();
-    basis.makeBasis(
-      uVec.clone().normalize(), // ローカル X 軸
-      vVec.clone().normalize(), // ローカル Y 軸
-      normal.clone().normalize() // ローカル Z 軸
-    );
-    planeMesh.setRotationFromMatrix(basis);
-    // planeMesh.setRotationFromQuaternion(q);
-
-    scene.add(planeMesh);
-
-    // 3) ShapeGeometry を使った平面パッチ
+    // 凸包形状の平面ジオメトリ
     const shape = new THREE.Shape(
       hull2D.map((p) => new THREE.Vector2(p.u, p.v))
     );
@@ -140,11 +102,110 @@ class SPALAM {
     });
     const shapeMesh = new THREE.Mesh(shapeGeom, shapeMat);
 
-    // ShapeMesh も同じ位置・回転を適用
-    shapeMesh.position.copy(planeCenter);
-    shapeMesh.setRotationFromQuaternion(q);
+    return { planeMesh, shapeMesh };
+  }
 
-    scene.add(shapeMesh);
+  /**
+   * メッシュの位置と回転を調整する
+   */
+  private adjustMeshTransform(
+    group: THREE.Group,
+    P0: Point3D,
+    center: THREE.Vector3,
+    uVec: THREE.Vector3,
+    vVec: THREE.Vector3,
+    normal: THREE.Vector3,
+    midU: number,
+    midV: number,
+    useCenter: boolean = false
+  ) {
+    // 位置の設定
+    const planeCenter = new THREE.Vector3()
+      .copy(P0)
+      .add(uVec.clone().multiplyScalar(midU))
+      .add(vVec.clone().multiplyScalar(midV));
+
+    group.position.copy(useCenter ? center : planeCenter);
+
+    // 回転の設定
+    const camera = this.arRenderer!.getCamera();
+    const worldNormal = normal
+      .clone()
+      .normalize()
+      .applyQuaternion(camera.quaternion);
+
+    const basis = new THREE.Matrix4();
+    basis.makeBasis(
+      uVec.clone().normalize(),
+      vVec.clone().normalize(),
+      normal.clone().normalize()
+    );
+    group.setRotationFromMatrix(basis);
+  }
+
+  /**
+   * 平面の生成と配置
+   */
+  public async setGroupPosition() {
+    const { hull2D, hull3D, P0, uVec, vVec, normal } = await this.getPoints3D();
+    if (!hull3D) return;
+
+    // 中心点の計算
+    const center = new THREE.Vector3();
+    hull3D.forEach((p) => center.add(p));
+    center.divideScalar(hull3D.length);
+
+    // バウンディングボックスの計算
+    const us = hull2D.map((p) => p.u),
+      vs = hull2D.map((p) => p.v);
+    const minU = Math.min(...us),
+      maxU = Math.max(...us);
+    const minV = Math.min(...vs),
+      maxV = Math.max(...vs);
+    const planeWidth = maxU - minU;
+    const planeHeight = maxV - minV;
+    const midU = (minU + maxU) / 2;
+    const midV = (minV + maxV) / 2;
+
+    // ジオメトリの生成
+    if (!this.group) {
+      const scene = this.arRenderer!.getScene();
+      this.group = new THREE.Group();
+      const { planeMesh, shapeMesh } = this.createPlaneGeometries(
+        hull2D,
+        planeWidth,
+        planeHeight
+      );
+      this.group.add(planeMesh);
+      scene.add(this.group);
+    }
+
+    // 位置と回転の調整
+    this.adjustMeshTransform(
+      this.group,
+      P0,
+      center,
+      uVec,
+      vVec,
+      normal,
+      midU,
+      midV,
+      true
+    );
+    // this.adjustMeshTransform(
+    //   shapeMesh,
+    //   P0,
+    //   center,
+    //   uVec,
+    //   vVec,
+    //   normal,
+    //   midU,
+    //   midV,
+    //   false
+    // );
+
+    // this.group.add(planeMesh);
+    // scene.add(shapeMesh);
   }
 
   private async getPoints3D() {
@@ -212,6 +273,7 @@ class SPALAM {
     if (this.featureDetector) {
       this.featureDetector.render();
     }
+    this.setGroupPosition();
     if (this.arRenderer) {
       this.arRenderer.render();
     }

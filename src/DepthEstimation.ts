@@ -59,6 +59,7 @@ export class DepthEstimation {
       console.error("Model or processor not loaded");
       return;
     }
+    if (this.isProcessing) return;
     this.isProcessing = true;
 
     const currentFrame = this.context.getImageData(
