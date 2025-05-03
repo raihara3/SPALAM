@@ -96,10 +96,13 @@ export class DepthEstimation {
     const imageData = new Uint8ClampedArray(4 * this.depthMap.length);
     for (let i = 0; i < this.depthMap.length; ++i) {
       const offset = 4 * i;
-      imageData[offset] = 255; // Set base color to red
+      const normalizedDepth = (this.depthMap[i] - min) / range;
 
-      // Set alpha to normalized depth value
-      imageData[offset + 3] = 255 * (1 - (this.depthMap[i] - min) / range);
+      // RGBを深度値に基づいて設定（例：青から赤へのグラデーション）
+      imageData[offset] = normalizedDepth * 255; // R
+      imageData[offset + 1] = 0; // G
+      imageData[offset + 2] = (1 - normalizedDepth) * 255; // B
+      imageData[offset + 3] = 255; // Alpha（完全不透明）
     }
     const outPixelData = new ImageData(imageData, ow, oh);
     const tmp = document.createElement("canvas");
@@ -110,6 +113,7 @@ export class DepthEstimation {
     // if (this.depthContext) {
     //   this.depthContext.putImageData(outPixelData, 0, 0);
     // }
+    this.depthContext!.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.depthContext!.drawImage(
       tmp,
       0,
