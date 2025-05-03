@@ -9,10 +9,20 @@ import { Point3D } from "../types";
  *   - カメラ座標系での3D点群
  */
 function backProjectPoints(points: Array<Point3D>) {
-  const Fx = 2584; //カメラの焦点距離
-  const Fy = 4563; //カメラの焦点距離
-  const Cx = 1057; //カメラの光学中心
-  const Cy = 1663; //カメラの光学中心
+  const focalLength = 27; // カメラの焦点距離
+  const sensorWidth = 36; // センサーの幅
+  const imageWidth = 640; // 画像の幅
+  const imageHeight = 480; // 画像の高さ
+
+  const Fx = (focalLength / sensorWidth) * imageWidth; // カメラの焦点距離
+  const Fy = (focalLength / sensorWidth) * imageHeight; // カメラの焦点距離
+  const Cx = imageWidth / 2; // カメラの光学中心
+  const Cy = imageHeight / 2; // カメラの光学中心
+
+  // const Fx = 2584; //カメラの焦点距離
+  // const Fy = 4563; //カメラの焦点距離
+  // const Cx = 1057; //カメラの光学中心
+  // const Cy = 1663; //カメラの光学中心
 
   const points3D: Array<Point3D> = [];
 
