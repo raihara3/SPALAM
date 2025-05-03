@@ -7,12 +7,12 @@ export class FeatureDetector {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
 
-  private readonly maxCorners: number = 200;
-  private readonly qualityLevel: number = 0.01;
-  private readonly minDistance: number = 10;
-  private readonly blockSize: number = 3;
-  private readonly useHarrisDetector: boolean = false;
-  private readonly k: number = 0.04;
+  private readonly maxCorners: number = 400; // 最大特徴点数
+  private readonly qualityLevel: number = 0.01; // 特徴点の質。小さいほど高品質
+  private readonly minDistance: number = 10; // 特徴点間の最小距離。密集するのを防ぐ
+  private readonly blockSize: number = 3; // 特徴点検出のための近傍領域のサイズ。奇数である必要がある
+  private readonly useHarrisDetector: boolean = false; // Harrisコーナー検出器を使用するかどうか
+  private readonly k: number = 0.04; // Harrisコーナー検出器のパラメータ。一般的に0.04から0.06の範囲で使用される
 
   private prevGray: any = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
