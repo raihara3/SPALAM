@@ -34,6 +34,7 @@ export class FeatureDetector {
     this.video = video;
 
     this.canvas = canvas || document.createElement("canvas");
+    this.canvas.id = "featureCanvas";
     this.canvas.width = video.videoWidth;
     this.canvas.height = video.videoHeight;
 

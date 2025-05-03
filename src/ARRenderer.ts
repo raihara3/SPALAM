@@ -1,6 +1,9 @@
 import * as THREE from "three";
 
 export class ARRenderer {
+  private width: number;
+  private height: number;
+
   private threeCanvas: HTMLCanvasElement;
 
   // Three.js関連
@@ -8,7 +11,9 @@ export class ARRenderer {
   private camera!: THREE.PerspectiveCamera;
   private renderer!: THREE.WebGLRenderer;
 
-  constructor() {
+  constructor({ width, height }: { width: number; height: number }) {
+    this.width = width;
+    this.height = height;
     // this.video = document.getElementById("camera") as HTMLVideoElement;
     // this.canvas = document.getElementById("output") as HTMLCanvasElement;
     // this.ctx = this.canvas.getContext("2d")!;
@@ -32,7 +37,7 @@ export class ARRenderer {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(
       75,
-      window.innerWidth / window.innerHeight,
+      this.width / this.height,
       0.1,
       1000
     );
@@ -41,7 +46,7 @@ export class ARRenderer {
       canvas: this.threeCanvas,
       alpha: true,
     });
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(this.width, this.height);
     this.renderer.setClearColor(0x000000, 0);
     // カメラを固定位置に配置
     // TODO: カメラの位置を調整する
@@ -50,9 +55,9 @@ export class ARRenderer {
 
     // ウィンドウサイズ変更時のイベントリスナー
     window.addEventListener("resize", () => {
-      this.camera.aspect = window.innerWidth / window.innerHeight;
+      this.camera.aspect = this.width / this.height;
       this.camera.updateProjectionMatrix();
-      this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.renderer.setSize(this.width, this.height);
     });
   }
 

@@ -46,7 +46,10 @@ class SPALAM {
       this.video.style.display = "none";
       console.debug("Video element:", this.video);
 
-      this.arRenderer = new ARRenderer();
+      this.arRenderer = new ARRenderer({
+        width: this.video.width,
+        height: this.video.height,
+      });
 
       this.featureDetector = new FeatureDetector({
         cv,

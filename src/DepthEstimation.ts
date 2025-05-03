@@ -23,6 +23,7 @@ export class DepthEstimation {
     this.canvas = canvas;
     this.context = context;
     this.depthCanvas = document.createElement("canvas");
+    this.depthCanvas.id = "depthCanvas";
     this.depthCanvas.width = this.canvas.width;
     this.depthCanvas.height = this.canvas.height;
     this.depthContext = this.depthCanvas.getContext("2d", {
@@ -83,8 +84,8 @@ export class DepthEstimation {
 
     let min = Infinity;
     let max = -Infinity;
-    this.depthCanvas.width = ow;
-    this.depthCanvas.height = oh;
+    // this.depthCanvas.width = ow;
+    // this.depthCanvas.height = oh;
     for (let i = 0; i < this.depthMap.length; ++i) {
       const v = this.depthMap[i];
       if (v < min) min = v;
@@ -101,9 +102,25 @@ export class DepthEstimation {
       imageData[offset + 3] = 255 * (1 - (this.depthMap[i] - min) / range);
     }
     const outPixelData = new ImageData(imageData, ow, oh);
-    if (this.depthContext) {
-      this.depthContext.putImageData(outPixelData, 0, 0);
-    }
+    const tmp = document.createElement("canvas");
+    tmp.width = ow;
+    tmp.height = oh;
+    const tmpCtx = tmp.getContext("2d")!;
+    tmpCtx.putImageData(outPixelData, 0, 0);
+    // if (this.depthContext) {
+    //   this.depthContext.putImageData(outPixelData, 0, 0);
+    // }
+    this.depthContext!.drawImage(
+      tmp,
+      0,
+      0,
+      ow,
+      oh,
+      0,
+      0,
+      this.canvas.width,
+      this.canvas.height
+    );
 
     this.isProcessing = false;
 
