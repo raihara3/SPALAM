@@ -51,7 +51,7 @@ export class ARRenderer {
     // カメラを固定位置に配置
     // TODO: カメラの位置を調整する
     // this.camera.position.x = -0.5;
-    this.camera.position.z = 5;
+    this.camera.position.z = 3;
 
     // ウィンドウサイズ変更時のイベントリスナー
     window.addEventListener("resize", () => {

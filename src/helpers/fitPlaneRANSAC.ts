@@ -17,7 +17,7 @@ import { Point3D, PlaneModel } from "../types";
 function fitPlaneRANSAC({
   points,
   iterations = 100,
-  threshold = 0.05,
+  threshold = 0.1,
 }: {
   points: Point3D[];
   iterations?: number;
@@ -120,6 +120,16 @@ function distancePointToPlane(
     plane.a * plane.a + plane.b * plane.b + plane.c * plane.c
   );
   return numerator / denominator;
+}
+
+/**
+ * 深度情報を元に点群をフィルタリング
+ * 深度の中央値からの偏差が delta 以下の点を残す
+ */
+export function filterByDepth(points3D: Point3D[], delta = 0.025) {
+  const zs = points3D.map((p) => p.z).sort((a, b) => a - b);
+  const medZ = zs[Math.floor(zs.length / 2)];
+  return points3D.filter((p) => Math.abs(p.z - medZ) < delta);
 }
 
 interface RANSACResult {

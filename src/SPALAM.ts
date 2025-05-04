@@ -16,7 +16,7 @@ import { CameraController } from "./utils/CameraController";
 // helpers
 import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
 import backProjectPoints from "./helpers/backProjectPoints";
-import fitPlaneRANSAC from "./helpers/fitPlaneRANSAC";
+import fitPlaneRANSAC, { filterByDepth } from "./helpers/fitPlaneRANSAC";
 import projectInliersToPlane2D from "./helpers/projectInliersToPlane2D";
 import computeConvexHull2D from "./helpers/computeConvexHull2D";
 import liftHull2DTo3D from "./helpers/liftHull2DTo3D";
@@ -226,10 +226,12 @@ class SPALAM {
 
     // 特徴点の3D座標からカメラ座標を復元
     const points3DBackProjected = backProjectPoints(points3D);
+    // 外れ値やノイズを除去
+    let filterdPoints3D = filterByDepth(points3DBackProjected, 0.025);
 
     // 平面モデルをRANSACでフィッティング
     const planeModel = fitPlaneRANSAC({
-      points: points3DBackProjected,
+      points: filterdPoints3D,
     });
     if (!planeModel.model) return {};
     const n = new THREE.Vector3(
