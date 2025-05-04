@@ -18,6 +18,7 @@ export class FeatureDetector {
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
 
   trackedFeatures: Feature[] = []; // トラッキングされた特徴点
+  centerFeature: Feature | null = null; // 中心特徴点
 
   constructor({
     cv,
@@ -87,6 +88,7 @@ export class FeatureDetector {
             x: points.data32F[i * 2],
             y: points.data32F[i * 2 + 1],
             trackingCount: 1,
+            id: Math.random().toString(36).substring(2, 10),
           });
         }
         points.delete();
@@ -128,6 +130,7 @@ export class FeatureDetector {
             x: nextPoints.data32F[i * 2],
             y: nextPoints.data32F[i * 2 + 1],
             trackingCount: this.prevFeatures[i].trackingCount + 1,
+            id: Math.random().toString(36).substring(2, 10),
           });
         }
       }
@@ -152,6 +155,7 @@ export class FeatureDetector {
             x: points.data32F[i * 2],
             y: points.data32F[i * 2 + 1],
             trackingCount: 1,
+            id: Math.random().toString(36).substring(2, 10),
           });
         }
         points.delete();
@@ -184,13 +188,101 @@ export class FeatureDetector {
     this.prevFeatures = [];
   }
 
+  /**
+   * 特徴点の描画
+   */
   private drawFeatures(features: Feature[]): void {
-    features.forEach(({ x, y }) => {
-      this.ctx.fillStyle = "#FF0000";
+    if (this.trackedFeatures) {
+      this.findNearestStableFeature(this.trackedFeatures);
+    }
+    features.forEach((feature) => {
+      const isCenter =
+        this.centerFeature &&
+        feature.x === this.centerFeature.x &&
+        feature.y === this.centerFeature.y;
+
       this.ctx.beginPath();
-      this.ctx.arc(x, y, 3, 0, 2 * Math.PI);
+      this.ctx.arc(feature.x, feature.y, isCenter ? 5 : 3, 0, 2 * Math.PI);
+      this.ctx.fillStyle = isCenter ? "#FFFF00" : "#FF0000";
       this.ctx.fill();
+
+      // 中心特徴点の場合、追跡カウントを表示
+      if (isCenter) {
+        this.ctx.fillText(
+          `Count: ${feature.trackingCount}`,
+          feature.x + 10,
+          feature.y
+        );
+      }
     });
+  }
+
+  /**
+   * 画面中央に最も近い安定した特徴点を見つける
+   */
+  private findNearestStableFeature(features: Feature[]): Feature | null {
+    const centerX = this.canvas.width / 2;
+    const centerY = this.canvas.height / 2;
+    let nearestFeature: Feature | null = null;
+    let minDistance = Infinity;
+
+    // 現在の中心特徴点が有効な場合はそれを継続して使用
+    if (this.centerFeature) {
+      console.log(this.centerFeature);
+      const currentFeature = features.find(
+        (f) =>
+          Math.abs(f.x - this.centerFeature!.x) < 10 &&
+          Math.abs(f.y - this.centerFeature!.y) < 10 &&
+          this.isFeatureValid(f)
+      );
+      if (currentFeature) {
+        this.centerFeature = nearestFeature;
+        return currentFeature;
+      }
+    }
+
+    // 新しい中心特徴点を探す
+    features.forEach((feature) => {
+      if (!this.isFeatureValid(feature)) return;
+
+      const distance = Math.sqrt(
+        Math.pow(feature.x - centerX, 2) + Math.pow(feature.y - centerY, 2)
+      );
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestFeature = feature;
+      }
+    });
+
+    // 新しい特徴点が見つかった場合、それを中心特徴点として設定
+    if (nearestFeature) {
+      this.centerFeature = nearestFeature;
+    } else {
+      this.centerFeature = null;
+    }
+
+    return nearestFeature;
+  }
+
+  /**
+   * 特徴点が有効かどうかを判定
+   */
+  private isFeatureValid(feature: Feature): boolean {
+    return (
+      // 画面内に収まっているか
+      feature.x >= 0 &&
+      feature.x <= this.canvas.width &&
+      feature.y >= 0 &&
+      feature.y <= this.canvas.height &&
+      // 一定フレーム以上追跡できているか
+      feature.trackingCount >= 5 && // 安定性を高めるため5フレームに増やす
+      // 画面端すぎない位置にあるか
+      feature.x > this.canvas.width * 0.1 &&
+      feature.x < this.canvas.width * 0.9 &&
+      feature.y > this.canvas.height * 0.1 &&
+      feature.y < this.canvas.height * 0.9
+    );
   }
 
   public getTrackedFeaturePoints(): Feature[] {
