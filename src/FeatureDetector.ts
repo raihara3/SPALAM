@@ -287,6 +287,6 @@ export class FeatureDetector {
   }
 
   public getTrackedFeaturePoints(): Feature[] {
-    return this.trackedFeatures;
+    return this.trackedFeatures.filter((feature) => feature.trackingCount >= 5);
   }
 }
