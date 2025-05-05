@@ -69,6 +69,10 @@ export class ARRenderer {
     return this.camera;
   }
 
+  setCameraPosition(x: number, y: number, z: number): void {
+    this.camera.position.set(x, y, z);
+  }
+
   render() {
     this.renderer.render(this.scene, this.camera);
   }

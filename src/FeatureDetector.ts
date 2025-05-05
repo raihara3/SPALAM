@@ -7,7 +7,7 @@ export class FeatureDetector {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
 
-  private readonly maxCorners: number = 200; // 最大特徴点数
+  private readonly maxCorners: number = 800; // 最大特徴点数
   private readonly qualityLevel: number = 0.01; // 特徴点の質。小さいほど高品質
   private readonly minDistance: number = 10; // 特徴点間の最小距離。密集するのを防ぐ
   private readonly blockSize: number = 3; // 特徴点検出のための近傍領域のサイズ。奇数である必要がある
@@ -208,15 +208,6 @@ export class FeatureDetector {
       this.ctx.arc(feature.x, feature.y, isCenter ? 5 : 3, 0, 2 * Math.PI);
       this.ctx.fillStyle = isCenter ? "#FFFF00" : "#FF0000";
       this.ctx.fill();
-
-      // 中心特徴点の場合、追跡カウントを表示
-      if (isCenter) {
-        this.ctx.fillText(
-          `Count: ${feature.trackingCount}`,
-          feature.x + 10,
-          feature.y
-        );
-      }
     });
   }
 

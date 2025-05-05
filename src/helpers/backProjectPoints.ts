@@ -36,7 +36,7 @@ function backProjectPoints(points: Array<Point3D>) {
     // Y = (y - Cy) * Z / Fy
     const y = ((point.y - Cy) * z) / Fy;
 
-    points3D.push({ x, y, z });
+    points3D.push({ x, y, z, id: point.id });
   }
   return points3D;
 }

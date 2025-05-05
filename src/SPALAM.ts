@@ -113,36 +113,50 @@ class SPALAM {
    */
   private adjustMeshTransform(
     group: THREE.Group,
-    P0: Point3D,
-    center: THREE.Vector3,
-    uVec: THREE.Vector3,
-    vVec: THREE.Vector3,
-    normal: THREE.Vector3,
+    P0: Point3D, // in camera-space
+    centerCS: THREE.Vector3, // in camera-space
+    uVecCS: THREE.Vector3, // in camera-space
+    vVecCS: THREE.Vector3, // in camera-space
+    normalCS: THREE.Vector3, // in camera-space
     midU: number,
     midV: number,
     useCenter: boolean = false
   ) {
-    // 位置の設定
-    const planeCenter = new THREE.Vector3()
-      .copy(P0)
-      .add(uVec.clone().multiplyScalar(midU))
-      .add(vVec.clone().multiplyScalar(midV));
-
-    group.position.copy(useCenter ? center : planeCenter);
-
-    // 回転の設定
     const camera = this.arRenderer!.getCamera();
-    const worldNormal = normal
+
+    // 1) カメラ空間の平面中心を求める
+    const planeCenterCS = new THREE.Vector3()
+      .copy(P0)
+      .add(uVecCS.clone().multiplyScalar(midU))
+      .add(vVecCS.clone().multiplyScalar(midV));
+
+    // 2) カメラ空間→ワールド空間に変換
+    const copyCamera = camera.clone();
+    copyCamera.position.z = 0; // カメラの位置を原点に
+    const planeCenterWS = copyCamera.localToWorld(planeCenterCS.clone());
+    const centerWS = copyCamera.localToWorld(centerCS.clone());
+
+    // 3) ワールド空間の位置をセット
+    group.position.copy(useCenter ? centerWS : planeCenterWS);
+
+    // 4) 各基底ベクトルもワールド空間に変換
+    const worldU = uVecCS
       .clone()
       .normalize()
-      .applyQuaternion(camera.quaternion);
+      .applyQuaternion(copyCamera.quaternion);
+    const worldV = vVecCS
+      .clone()
+      .normalize()
+      .applyQuaternion(copyCamera.quaternion);
+    const worldN = normalCS
+      .clone()
+      .normalize()
+      .applyQuaternion(copyCamera.quaternion);
 
-    const basis = new THREE.Matrix4();
-    basis.makeBasis(
-      uVec.clone().normalize(),
-      vVec.clone().normalize(),
-      normal.clone().normalize()
-    );
+    // 5) 直交基底から回転行列を作成
+    const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
+
+    // 6) メッシュに回転を適用
     group.setRotationFromMatrix(basis);
   }
 
@@ -195,6 +209,9 @@ class SPALAM {
       midV,
       true
     );
+    console.log(this.group.position);
+    this.arRenderer?.setCameraPosition(0, 0, this.group.position.z * 2);
+    console.log(this.arRenderer?.getCamera().position);
     // this.adjustMeshTransform(
     //   shapeMesh,
     //   P0,
@@ -212,7 +229,10 @@ class SPALAM {
   }
 
   private async getPoints3D() {
-    if (!this.depthEstimation) return {};
+    if (!this.depthEstimation || !this.featureDetector) return {};
+
+    // 中心特徴点が設定されていない場合は処理を中断
+    if (!this.featureDetector.centerFeature) return {};
 
     // 検出済みの特徴点と深度マップを使い、各特徴点の3D座標を計算
     const depthMap = await this.depthEstimation.getDepthMap();
@@ -249,7 +269,12 @@ class SPALAM {
     const u = new THREE.Vector3().crossVectors(n, r).normalize();
     const v = new THREE.Vector3().crossVectors(n, u).normalize();
     // 各inlier点の3D座標を平面座標(u,v)に射影
-    const P0 = planeModel.inliers[0]; // 一旦0番目
+    const centerPoint = points3DBackProjected.find(
+      (p) => p.id === this.featureDetector!.centerFeature!.id
+    );
+    if (!centerPoint) return {};
+    const P0 = centerPoint;
+    // const P0 = planeModel.inliers[0]; // 一旦0番目
     const projectedPoints2D = projectInliersToPlane2D({
       inliers: planeModel.inliers,
       P0: P0,

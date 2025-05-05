@@ -6,7 +6,7 @@ import { Feature } from "../types";
  * @param {Float32Array<ArrayBufferLike>} depthMap         - depth-estimation の出力深度マップ（一次元配列、行優先）
  * @param {number} mapWidth                                - depthMap の横幅（ピクセル数）
  * @param {number} mapHeight                               - depthMap の縦幅（ピクセル数）
- * @returns {Array<{ x: number, y: number, z: number }>}   - 各特徴点に対応する 3D 点群
+ * @returns {Array<{ x: number, y: number, z: number, id: string }>}   - 各特徴点に対応する 3D 点群
  */
 function sampleDepthAtFeaturePoints({
   featurePoints,
@@ -18,7 +18,7 @@ function sampleDepthAtFeaturePoints({
   depthMap: Float32Array<ArrayBufferLike>;
   mapWidth: number;
   mapHeight: number;
-}): Array<{ x: number; y: number; z: number }> {
+}): Array<{ x: number; y: number; z: number; id: string }> {
   const points3D = [];
 
   for (const point of featurePoints) {
@@ -43,6 +43,7 @@ function sampleDepthAtFeaturePoints({
           x: point.x,
           y: point.y,
           z: depth,
+          id: point.id,
         });
       }
     }
