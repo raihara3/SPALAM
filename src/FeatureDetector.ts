@@ -7,7 +7,7 @@ export class FeatureDetector {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
 
-  private readonly maxCorners: number = 800; // 最大特徴点数
+  private readonly maxCorners: number = 1000; // 最大特徴点数
   private readonly qualityLevel: number = 0.01; // 特徴点の質。小さいほど高品質
   private readonly minDistance: number = 10; // 特徴点間の最小距離。密集するのを防ぐ
   private readonly blockSize: number = 3; // 特徴点検出のための近傍領域のサイズ。奇数である必要がある
@@ -62,16 +62,27 @@ export class FeatureDetector {
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
   private detectAndTrackFeatures(): Feature[] {
-    // 画像をOpenCV.jsのMat形式に変換
+    // 1) 入力サイズ取得
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+
+    // 2) マスクを作成（中央50%×50%だけ検出許可）
+    const mask = new this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
+    const roiX = Math.floor(W * 0.25);
+    const roiY = Math.floor(H * 0.25);
+    const roiW = Math.floor(W * 0.5);
+    const roiH = Math.floor(H * 0.5);
+    mask
+      .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
+      .setTo(new this.cv.Scalar(255));
+
+    // 3) グレースケール画像を作成
     const src = this.cv.imread(this.canvas);
     const gray = new this.cv.Mat();
-    const mask = new this.cv.Mat();
+    this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
 
     try {
-      // グレースケール変換
-      this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
-
-      // 前フレームがない場合は新規に特徴点を検出
+      // 4) 初回検出 or 追跡点不足時の特徴点検出
       if (!this.prevGray) {
         const points = new this.cv.Mat();
         this.cv.goodFeaturesToTrack(
@@ -80,7 +91,7 @@ export class FeatureDetector {
           this.maxCorners,
           this.qualityLevel,
           this.minDistance,
-          mask,
+          mask, // ← マスクを渡す
           this.blockSize,
           this.useHarrisDetector,
           this.k
@@ -102,7 +113,7 @@ export class FeatureDetector {
         return features;
       }
 
-      // オプティカルフローで特徴点を追跡
+      // 5) オプティカルフローで追跡
       const prevPoints = new this.cv.Mat(
         this.prevFeatures.length,
         1,
@@ -125,6 +136,8 @@ export class FeatureDetector {
         status,
         err
       );
+      prevPoints.delete();
+      err.delete();
 
       // 追跡結果を配列に変換
       const trackedFeatures: Feature[] = [];
@@ -139,8 +152,10 @@ export class FeatureDetector {
           });
         }
       }
+      nextPoints.delete();
+      status.delete();
 
-      // 追跡点が少なくなったら新しい特徴点を追加
+      // 6) 追跡点が少なければ追加検出
       if (trackedFeatures.length < this.maxCorners * 0.5) {
         const points = new this.cv.Mat();
         this.cv.goodFeaturesToTrack(
@@ -149,7 +164,7 @@ export class FeatureDetector {
           this.maxCorners - trackedFeatures.length,
           this.qualityLevel,
           this.minDistance,
-          mask,
+          mask, // ← こちらもマスクを渡す
           this.blockSize,
           this.useHarrisDetector,
           this.k
@@ -166,11 +181,7 @@ export class FeatureDetector {
         points.delete();
       }
 
-      // メモリ解放とフレーム更新
-      prevPoints.delete();
-      nextPoints.delete();
-      status.delete();
-      err.delete();
+      // 7) フレーム更新
       this.prevGray.delete();
       this.prevGray = gray.clone();
       this.prevFeatures = trackedFeatures;
@@ -178,7 +189,7 @@ export class FeatureDetector {
       this.trackedFeatures = trackedFeatures;
       return trackedFeatures;
     } finally {
-      // メモリ解放
+      // 必ず解放
       src.delete();
       gray.delete();
       mask.delete();
