@@ -16,6 +16,7 @@ export class FeatureDetector {
 
   private prevGray: any = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
+  private nextFeatureId: number = 0;
 
   trackedFeatures: Feature[] = []; // トラッキングされた特徴点
   centerFeature: Feature | null = null; // 中心特徴点
@@ -53,6 +54,10 @@ export class FeatureDetector {
     this.drawFeatures(features);
   }
 
+  private generateFeatureId(): string {
+    return `feature_${this.nextFeatureId++}`;
+  }
+
   /**
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
@@ -88,7 +93,7 @@ export class FeatureDetector {
             x: points.data32F[i * 2],
             y: points.data32F[i * 2 + 1],
             trackingCount: 1,
-            id: Math.random().toString(36).substring(2, 10),
+            id: this.generateFeatureId(),
           });
         }
         points.delete();
@@ -130,7 +135,7 @@ export class FeatureDetector {
             x: nextPoints.data32F[i * 2],
             y: nextPoints.data32F[i * 2 + 1],
             trackingCount: this.prevFeatures[i].trackingCount + 1,
-            id: Math.random().toString(36).substring(2, 10),
+            id: this.prevFeatures[i].id,
           });
         }
       }
@@ -155,7 +160,7 @@ export class FeatureDetector {
             x: points.data32F[i * 2],
             y: points.data32F[i * 2 + 1],
             trackingCount: 1,
-            id: Math.random().toString(36).substring(2, 10),
+            id: this.generateFeatureId(),
           });
         }
         points.delete();
@@ -197,9 +202,7 @@ export class FeatureDetector {
     }
     features.forEach((feature) => {
       const isCenter =
-        this.centerFeature &&
-        feature.x === this.centerFeature.x &&
-        feature.y === this.centerFeature.y;
+        this.centerFeature && feature.id === this.centerFeature.id;
 
       this.ctx.beginPath();
       this.ctx.arc(feature.x, feature.y, isCenter ? 5 : 3, 0, 2 * Math.PI);
@@ -228,15 +231,11 @@ export class FeatureDetector {
 
     // 現在の中心特徴点が有効な場合はそれを継続して使用
     if (this.centerFeature) {
-      console.log(this.centerFeature);
       const currentFeature = features.find(
-        (f) =>
-          Math.abs(f.x - this.centerFeature!.x) < 10 &&
-          Math.abs(f.y - this.centerFeature!.y) < 10 &&
-          this.isFeatureValid(f)
+        (f) => f.id === this.centerFeature!.id && this.isFeatureValid(f)
       );
       if (currentFeature) {
-        this.centerFeature = nearestFeature;
+        this.centerFeature = currentFeature;
         return currentFeature;
       }
     }
