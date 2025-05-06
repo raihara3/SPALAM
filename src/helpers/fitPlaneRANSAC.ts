@@ -109,7 +109,7 @@ function computePlaneFrom3Points(p1: Point3D, p2: Point3D, p3: Point3D) {
 /**
  * 点と平面の距離を計算
  */
-function distancePointToPlane(
+export function distancePointToPlane(
   point: Point3D,
   plane: { a: number; b: number; c: number; d: number }
 ): number {

@@ -16,10 +16,14 @@ import { CameraController } from "./utils/CameraController";
 // helpers
 import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
 import backProjectPoints from "./helpers/backProjectPoints";
-import fitPlaneRANSAC, { filterByDepth } from "./helpers/fitPlaneRANSAC";
+import fitPlaneRANSAC, {
+  filterByDepth,
+  distancePointToPlane,
+} from "./helpers/fitPlaneRANSAC";
 import projectInliersToPlane2D from "./helpers/projectInliersToPlane2D";
 import computeConvexHull2D from "./helpers/computeConvexHull2D";
 import liftHull2DTo3D from "./helpers/liftHull2DTo3D";
+import { weightedPlaneFit2D } from "./helpers/weightedPlaneFit2D";
 
 class SPALAM {
   video: HTMLVideoElement | null;
@@ -156,7 +160,13 @@ class SPALAM {
     // 5) 直交基底から回転行列を作成
     const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
 
-    // 6) メッシュに回転を適用
+    // 6) x軸にプラス90度回転を追加
+    const rotationX = new THREE.Matrix4().makeRotationX(
+      THREE.MathUtils.degToRad(90)
+    );
+    basis.multiply(rotationX);
+
+    // 7) メッシュに回転を適用
     group.setRotationFromMatrix(basis);
   }
 
@@ -254,11 +264,81 @@ class SPALAM {
       points: filterdPoints3D,
     });
     if (!planeModel.model) return {};
+
+    const inliers = planeModel.inliers; // [{X,Y,Z},…]
+    const tracked = this.featureDetector.trackedFeatures; // [{x,y,trackingCount},…]
+    const mapW = this.featureDetector.canvas.width,
+      mapH = this.featureDetector.canvas.height;
+
+    const weights = inliers.map((pt, i) => {
+      // reprojection error weight（平面からの距離による重み）
+      if (!planeModel.model) return 0;
+      const d = distancePointToPlane(pt, planeModel.model);
+      // シグマ値を調整（0.05が小さすぎる可能性）
+      const w_reproj = Math.exp((-d / 0.5) ** 2); // 0.05 → 0.5 に変更
+
+      // depth gradient weight（深度の勾配による重み）
+      const x = Math.round(Math.min(Math.max(pt.x, 0), mapW - 1)); // 境界チェック追加
+      const y = Math.round(Math.min(Math.max(pt.y, 0), mapH - 1));
+
+      // 深度の勾配計算を安全に
+      const gx =
+        x > 0 && x < mapW - 1
+          ? Math.abs(
+              depthMap[y * mapW + (x + 1)] - depthMap[y * mapW + (x - 1)]
+            )
+          : 0;
+      const gy =
+        y > 0 && y < mapH - 1
+          ? Math.abs(
+              depthMap[(y + 1) * mapW + x] - depthMap[(y - 1) * mapW + x]
+            )
+          : 0;
+
+      // 勾配の重みのスケールを調整
+      const w_grad = 1 / (1 + (gx + gy)); // * 10 を削除
+
+      // tracking stability weight（追跡安定性による重み）
+      const trackCount = tracked[i]?.trackingCount ?? 1;
+      const w_track = Math.min(trackCount / 5, 1); // 10 → 5 に変更
+
+      // 各重みの下限を設定
+      const minWeight = 0.1;
+      const finalWeight = Math.max(w_reproj * w_grad * w_track, minWeight);
+
+      // NaNチェック
+      return isNaN(finalWeight) ? minWeight : finalWeight;
+    });
+
+    const { a, b, c } = weightedPlaneFit2D(inliers, weights);
+
+    // NaNチェックと異常値の補正
+    const isValidNumber = (n: number) => !isNaN(n) && isFinite(n);
+    const safeA = isValidNumber(a) ? a : 0;
+    const safeB = isValidNumber(b) ? b : 0;
+    const safeC = isValidNumber(c) ? c : -1;
+
+    // デバッグ用のログ
+    console.log("Weights:", weights);
+    console.log("Plane parameters:", { a: safeA, b: safeB, c: safeC });
+
+    const refinedModel = {
+      a: safeA,
+      b: safeB,
+      c: -1,
+      d: safeC,
+    };
+
     const n = new THREE.Vector3(
-      planeModel.model.a,
-      planeModel.model.b,
-      planeModel.model.c
+      refinedModel.a,
+      refinedModel.b,
+      refinedModel.c
     ).normalize();
+    // 法線ベクトルが有効か確認
+    if (n.lengthSq() === 0) {
+      n.set(0, 0, 1); // デフォルトの法線を設定
+    }
+
     // 平面と直交しない参照ベクトル
     let r = new THREE.Vector3(0, 1, 0);
     // if (Math.abs(n.dot(r)) > 0.9) {
