@@ -32,6 +32,20 @@ class SPALAM {
   arRenderer: ARRenderer | null = null;
 
   group: THREE.Group | null = null;
+  
+  // フィッティング回数を制限するための定数とカウンター
+  private readonly MAX_FITTING_COUNT: number = 3;
+  private fittingCount: number = 0;
+  
+  // 3回分の結果を保存する配列
+  private fittingResults: Array<{
+    hull2D: Point2D[];
+    hull3D: Point3D[];
+    P0: Point3D;
+    uVec: THREE.Vector3;
+    vVec: THREE.Vector3;
+    normal: THREE.Vector3;
+  }> = [];
 
   constructor() {
     this.video = null;
@@ -171,71 +185,132 @@ class SPALAM {
   }
 
   /**
+   * 3回分の結果から平均値を計算する
+   */
+  private calculateAverageResults() {
+    if (this.fittingResults.length !== this.MAX_FITTING_COUNT) {
+      return null;
+    }
+
+    const results = this.fittingResults;
+    
+    // P0の平均を計算
+    const avgP0 = {
+      x: results.reduce((sum, r) => sum + r.P0.x, 0) / results.length,
+      y: results.reduce((sum, r) => sum + r.P0.y, 0) / results.length,
+      z: results.reduce((sum, r) => sum + r.P0.z, 0) / results.length,
+    };
+
+    // ベクトルの平均を計算
+    const avgUVec = new THREE.Vector3(
+      results.reduce((sum, r) => sum + r.uVec.x, 0) / results.length,
+      results.reduce((sum, r) => sum + r.uVec.y, 0) / results.length,
+      results.reduce((sum, r) => sum + r.uVec.z, 0) / results.length
+    ).normalize();
+
+    const avgVVec = new THREE.Vector3(
+      results.reduce((sum, r) => sum + r.vVec.x, 0) / results.length,
+      results.reduce((sum, r) => sum + r.vVec.y, 0) / results.length,
+      results.reduce((sum, r) => sum + r.vVec.z, 0) / results.length
+    ).normalize();
+
+    const avgNormal = new THREE.Vector3(
+      results.reduce((sum, r) => sum + r.normal.x, 0) / results.length,
+      results.reduce((sum, r) => sum + r.normal.y, 0) / results.length,
+      results.reduce((sum, r) => sum + r.normal.z, 0) / results.length
+    ).normalize();
+
+    // hull2Dの平均を計算（最初の結果のhull2Dの構造を基準とする）
+    const baseHull2D = results[0].hull2D;
+    const avgHull2D = baseHull2D.map((_, i) => ({
+      u: results.reduce((sum, r) => sum + (r.hull2D[i]?.u || 0), 0) / results.length,
+      v: results.reduce((sum, r) => sum + (r.hull2D[i]?.v || 0), 0) / results.length,
+    }));
+
+    // hull3Dの平均を計算
+    const baseHull3D = results[0].hull3D;
+    const avgHull3D = baseHull3D.map((_, i) => ({
+      x: results.reduce((sum, r) => sum + (r.hull3D[i]?.x || 0), 0) / results.length,
+      y: results.reduce((sum, r) => sum + (r.hull3D[i]?.y || 0), 0) / results.length,
+      z: results.reduce((sum, r) => sum + (r.hull3D[i]?.z || 0), 0) / results.length,
+    }));
+
+    return {
+      hull2D: avgHull2D,
+      hull3D: avgHull3D,
+      P0: avgP0,
+      uVec: avgUVec,
+      vVec: avgVVec,
+      normal: avgNormal,
+    };
+  }
+
+  /**
    * 平面の生成と配置
    */
   public async setGroupPosition() {
-    const { hull2D, hull3D, P0, uVec, vVec, normal } = await this.getPoints3D();
-    if (!hull3D) return;
+    // 3回分の推定を実行
+    if (this.fittingCount < this.MAX_FITTING_COUNT) {
+      const result = await this.getPoints3D();
+      if (result.hull3D) {
+        this.fittingResults.push(result);
+        this.fittingCount++;
+        console.log(`フィッティング完了: ${this.fittingCount}/${this.MAX_FITTING_COUNT}`);
+      }
+      return;
+    }
 
-    // 中心点の計算
-    const center = new THREE.Vector3();
-    hull3D.forEach((p) => center.add(p));
-    center.divideScalar(hull3D.length);
-
-    // バウンディングボックスの計算
-    const us = hull2D.map((p) => p.u),
-      vs = hull2D.map((p) => p.v);
-    const minU = Math.min(...us),
-      maxU = Math.max(...us);
-    const minV = Math.min(...vs),
-      maxV = Math.max(...vs);
-    const planeWidth = maxU - minU;
-    const planeHeight = maxV - minV;
-    const midU = (minU + maxU) / 2;
-    const midV = (minV + maxV) / 2;
-
-    // ジオメトリの生成
+    // 3回完了後、まだ平面が作成されていない場合のみ作成
     if (!this.group) {
+      const avgResult = this.calculateAverageResults();
+      if (!avgResult) return;
+
+      const { hull2D, hull3D, P0, uVec, vVec, normal } = avgResult;
+
+      // 中心点の計算
+      const center = new THREE.Vector3();
+      hull3D.forEach((p) => center.add(new THREE.Vector3(p.x, p.y, p.z)));
+      center.divideScalar(hull3D.length);
+
+      // バウンディングボックスの計算
+      const us = hull2D.map((p) => p.u),
+        vs = hull2D.map((p) => p.v);
+      const minU = Math.min(...us),
+        maxU = Math.max(...us);
+      const minV = Math.min(...vs),
+        maxV = Math.max(...vs);
+      const planeWidth = maxU - minU;
+      const planeHeight = maxV - minV;
+      const midU = (minU + maxU) / 2;
+      const midV = (minV + maxV) / 2;
+
+      // ジオメトリの生成
       const scene = this.arRenderer!.getScene();
       this.group = new THREE.Group();
-      const { planeMesh, shapeMesh } = this.createPlaneGeometries(
+      const { planeMesh } = this.createPlaneGeometries(
         hull2D,
         planeWidth,
         planeHeight
       );
       this.group.add(planeMesh);
       scene.add(this.group);
+
+      // 位置と回転の調整
+      this.adjustMeshTransform(
+        this.group,
+        P0,
+        center,
+        uVec,
+        vVec,
+        normal,
+        midU,
+        midV,
+        true
+      );
+      
+      console.log("平面配置完了:", this.group.position);
+      this.arRenderer?.setCameraPosition(0, 0, this.group.position.z * 2);
     }
-
-    // 位置と回転の調整
-    this.adjustMeshTransform(
-      this.group,
-      P0,
-      center,
-      uVec,
-      vVec,
-      normal,
-      midU,
-      midV,
-      true
-    );
-    console.log(this.group.position);
-    this.arRenderer?.setCameraPosition(0, 0, this.group.position.z * 2);
-    console.log(this.arRenderer?.getCamera().position);
-    // this.adjustMeshTransform(
-    //   shapeMesh,
-    //   P0,
-    //   center,
-    //   uVec,
-    //   vVec,
-    //   normal,
-    //   midU,
-    //   midV,
-    //   false
-    // );
-
-    // this.group.add(planeMesh);
-    // scene.add(shapeMesh);
   }
 
   private async getPoints3D() {
