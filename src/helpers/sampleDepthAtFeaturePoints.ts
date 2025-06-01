@@ -2,6 +2,51 @@
 import { Feature } from "../types";
 
 /**
+ * 空間的平滑化：指定された座標周辺の深度値の平均を計算
+ * @param {Float32Array} depthMap - 深度マップ
+ * @param {number} centerX - 中心のX座標
+ * @param {number} centerY - 中心のY座標
+ * @param {number} mapWidth - 深度マップの幅
+ * @param {number} mapHeight - 深度マップの高さ
+ * @param {number} radius - 平滑化半径（デフォルト: 5, ((radius*2)+1)二乗px）
+ * @returns {number} 平滑化された深度値
+ */
+function getSpatiallySmoothedDepth(
+  depthMap: Float32Array<ArrayBufferLike>,
+  centerX: number,
+  centerY: number,
+  mapWidth: number,
+  mapHeight: number,
+  radius: number = 5
+): number {
+  let depthSum = 0;
+  let validCount = 0;
+
+  // 指定された半径内の全ピクセルをチェック
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      const x = centerX + dx;
+      const y = centerY + dy;
+
+      // 境界チェック
+      if (x >= 0 && x < mapWidth && y >= 0 && y < mapHeight) {
+        const depthIndex = y * mapWidth + x;
+        const depth = depthMap[depthIndex];
+
+        // 有効な深度値のみ累積
+        if (depth && depth > 0) {
+          depthSum += depth;
+          validCount++;
+        }
+      }
+    }
+  }
+
+  // 有効な深度値がある場合は平均を返す、ない場合は0を返す
+  return validCount > 0 ? depthSum / validCount : 0;
+}
+
+/**
  * @param {Array<{ x: number, y: number }>} featurePoints  - 画像上の特徴点リスト（ピクセル座標）
  * @param {Float32Array<ArrayBufferLike>} depthMap         - depth-estimation の出力深度マップ（一次元配列、行優先）
  * @param {number} mapWidth                                - depthMap の横幅（ピクセル数）
@@ -33,16 +78,21 @@ function sampleDepthAtFeaturePoints({
       scaledY >= 0 &&
       scaledY < mapHeight
     ) {
-      // 深度マップから深度値を取得（行優先の一次元配列）
-      const depthIndex = scaledY * mapWidth + scaledX;
-      const depth = depthMap[depthIndex];
+      // 空間的平滑化：周辺領域の平均深度を取得
+      const smoothedDepth = getSpatiallySmoothedDepth(
+        depthMap,
+        scaledX,
+        scaledY,
+        mapWidth,
+        mapHeight
+      );
 
       // 有効な深度値の場合のみ追加
-      if (depth && depth > 0) {
+      if (smoothedDepth && smoothedDepth > 0) {
         points3D.push({
           x: point.x,
           y: point.y,
-          z: depth,
+          z: smoothedDepth,
           id: point.id,
         });
       }
