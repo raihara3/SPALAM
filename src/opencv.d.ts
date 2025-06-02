@@ -22,6 +22,7 @@ declare namespace cv {
   function imshow(canvasSource: string | HTMLCanvasElement, mat: Mat): void;
   function goodFeaturesToTrack(
     image: Mat,
+    corners: Mat,
     maxCorners: number,
     qualityLevel: number,
     minDistance: number,
@@ -29,9 +30,9 @@ declare namespace cv {
     blockSize?: number,
     useHarrisDetector?: boolean,
     k?: number
-  ): any;
+  ): void;
   function cvtColor(src: Mat, dst: Mat, code: number, dstCn?: number): void;
-  function COLOR_RGBA2GRAY: number;
+  const COLOR_RGBA2GRAY: number;
 }
 
 declare const cv: any;
