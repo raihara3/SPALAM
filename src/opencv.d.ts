@@ -18,7 +18,9 @@ declare namespace cv {
     y: number;
   }
 
-  function imread(image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement): Mat;
+  function imread(
+    image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement
+  ): Mat;
   function imshow(canvasSource: string | HTMLCanvasElement, mat: Mat): void;
   function goodFeaturesToTrack(
     image: Mat,
@@ -31,7 +33,7 @@ declare namespace cv {
     k?: number
   ): any;
   function cvtColor(src: Mat, dst: Mat, code: number, dstCn?: number): void;
-  function COLOR_RGBA2GRAY: number;
+  const COLOR_RGBA2GRAY: number;
 }
 
 declare const cv: any;

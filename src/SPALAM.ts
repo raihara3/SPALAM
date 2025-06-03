@@ -25,19 +25,29 @@ import computeConvexHull2D from "./helpers/computeConvexHull2D";
 import liftHull2DTo3D from "./helpers/liftHull2DTo3D";
 import { weightedPlaneFit2D } from "./helpers/weightedPlaneFit2D";
 
+/**
+ * SPALAMメインクラス
+ * WebGL/Three.jsを使用したAR環境での平面推定を実装
+ */
 class SPALAM {
+  /** ビデオ入力 */
   video: HTMLVideoElement | null;
+  /** 特徴点検出器 */
   featureDetector: FeatureDetector | null = null;
+  /** 深度推定モジュール */
   depthEstimation: DepthEstimation | null = null;
+  /** ARレンダラー */
   arRenderer: ARRenderer | null = null;
 
+  /** Three.jsグループオブジェクト */
   group: THREE.Group | null = null;
-  
-  // フィッティング回数を制限するための定数とカウンター
+
+  /** フィッティング回数を制限するための定数 */
   private readonly MAX_FITTING_COUNT: number = 3;
+  /** 現在のフィッティング回数 */
   private fittingCount: number = 0;
-  
-  // 3回分の結果を保存する配列
+
+  /** 3回分の平面推定結果を保存する配列 */
   private fittingResults: Array<{
     hull2D: Point2D[];
     hull3D: Point3D[];
@@ -52,6 +62,11 @@ class SPALAM {
     this.group = null;
   }
 
+  /**
+   * SPALAMを開始
+   * @param options - 開始オプション
+   * @param options.video - 使用するビデオ要素（省略時はカメラを使用）
+   */
   public start({ video = null }: { video?: HTMLVideoElement | null } = {}) {
     const setup = async () => {
       if (video) {
@@ -94,6 +109,10 @@ class SPALAM {
 
   /**
    * 平面ジオメトリを生成する
+   * @param hull2D - 2D凸包の点群
+   * @param planeWidth - 平面の幅
+   * @param planeHeight - 平面の高さ
+   * @returns 平面メッシュと凸包形状メッシュ
    */
   private createPlaneGeometries(
     hull2D: Point2D[],
@@ -128,6 +147,15 @@ class SPALAM {
 
   /**
    * メッシュの位置と回転を調整する
+   * @param group - Three.jsグループ
+   * @param P0 - 平面の原点（カメラ座標系）
+   * @param centerCS - 中心点（カメラ座標系）
+   * @param uVecCS - U軸ベクトル（カメラ座標系）
+   * @param vVecCS - V軸ベクトル（カメラ座標系）
+   * @param normalCS - 法線ベクトル（カメラ座標系）
+   * @param midU - U軸中央座標
+   * @param midV - V軸中央座標
+   * @param useCenter - 中心点を使用するか
    */
   private adjustMeshTransform(
     group: THREE.Group,
@@ -186,6 +214,7 @@ class SPALAM {
 
   /**
    * 3回分の結果から平均値を計算する
+   * @returns 平均化された結果またはnull
    */
   private calculateAverageResults() {
     if (this.fittingResults.length !== this.MAX_FITTING_COUNT) {
@@ -193,7 +222,7 @@ class SPALAM {
     }
 
     const results = this.fittingResults;
-    
+
     // P0の平均を計算
     const avgP0 = {
       x: results.reduce((sum, r) => sum + r.P0.x, 0) / results.length,
@@ -223,16 +252,26 @@ class SPALAM {
     // hull2Dの平均を計算（最初の結果のhull2Dの構造を基準とする）
     const baseHull2D = results[0].hull2D;
     const avgHull2D = baseHull2D.map((_, i) => ({
-      u: results.reduce((sum, r) => sum + (r.hull2D[i]?.u || 0), 0) / results.length,
-      v: results.reduce((sum, r) => sum + (r.hull2D[i]?.v || 0), 0) / results.length,
+      u:
+        results.reduce((sum, r) => sum + (r.hull2D[i]?.u || 0), 0) /
+        results.length,
+      v:
+        results.reduce((sum, r) => sum + (r.hull2D[i]?.v || 0), 0) /
+        results.length,
     }));
 
     // hull3Dの平均を計算
     const baseHull3D = results[0].hull3D;
     const avgHull3D = baseHull3D.map((_, i) => ({
-      x: results.reduce((sum, r) => sum + (r.hull3D[i]?.x || 0), 0) / results.length,
-      y: results.reduce((sum, r) => sum + (r.hull3D[i]?.y || 0), 0) / results.length,
-      z: results.reduce((sum, r) => sum + (r.hull3D[i]?.z || 0), 0) / results.length,
+      x:
+        results.reduce((sum, r) => sum + (r.hull3D[i]?.x || 0), 0) /
+        results.length,
+      y:
+        results.reduce((sum, r) => sum + (r.hull3D[i]?.y || 0), 0) /
+        results.length,
+      z:
+        results.reduce((sum, r) => sum + (r.hull3D[i]?.z || 0), 0) /
+        results.length,
     }));
 
     return {
@@ -247,6 +286,7 @@ class SPALAM {
 
   /**
    * 平面の生成と配置
+   * 3回の平面推定を実行し、平均化した結果を使用して平面を配置
    */
   public async setGroupPosition() {
     // 3回分の推定を実行
@@ -255,7 +295,9 @@ class SPALAM {
       if (result.hull3D) {
         this.fittingResults.push(result);
         this.fittingCount++;
-        console.log(`フィッティング完了: ${this.fittingCount}/${this.MAX_FITTING_COUNT}`);
+        console.log(
+          `フィッティング完了: ${this.fittingCount}/${this.MAX_FITTING_COUNT}`
+        );
       }
       return;
     }
@@ -307,12 +349,16 @@ class SPALAM {
         midV,
         true
       );
-      
+
       console.log("平面配置完了:", this.group.position);
       this.arRenderer?.setCameraPosition(0, 0, this.group.position.z * 2);
     }
   }
 
+  /**
+   * 特徴点の3D座標を取得し、平面フィッティングを実行
+   * @returns 平面推定結果
+   */
   private async getPoints3D() {
     if (!this.depthEstimation || !this.featureDetector) return {};
 
@@ -349,11 +395,10 @@ class SPALAM {
       // reprojection error weight（平面からの距離による重み）
       if (!planeModel.model) return 0;
       const d = distancePointToPlane(pt, planeModel.model);
-      // シグマ値を調整（0.05が小さすぎる可能性）
-      const w_reproj = Math.exp((-d / 0.5) ** 2); // 0.05 → 0.5 に変更
+      const w_reproj = Math.exp((-d / 0.5) ** 2);
 
       // depth gradient weight（深度の勾配による重み）
-      const x = Math.round(Math.min(Math.max(pt.x, 0), mapW - 1)); // 境界チェック追加
+      const x = Math.round(Math.min(Math.max(pt.x, 0), mapW - 1));
       const y = Math.round(Math.min(Math.max(pt.y, 0), mapH - 1));
 
       // 深度の勾配計算を安全に
@@ -371,11 +416,11 @@ class SPALAM {
           : 0;
 
       // 勾配の重みのスケールを調整
-      const w_grad = 1 / (1 + (gx + gy)); // * 10 を削除
+      const w_grad = 1 / (1 + (gx + gy));
 
       // tracking stability weight（追跡安定性による重み）
       const trackCount = tracked[i]?.trackingCount ?? 1;
-      const w_track = Math.min(trackCount / 5, 1); // 10 → 5 に変更
+      const w_track = Math.min(trackCount / 5, 1);
 
       // 各重みの下限を設定
       const minWeight = 0.1;
@@ -416,10 +461,6 @@ class SPALAM {
 
     // 平面と直交しない参照ベクトル
     let r = new THREE.Vector3(0, 1, 0);
-    // if (Math.abs(n.dot(r)) > 0.9) {
-    //   // n がほぼ(1,0,0)に平行なら別軸を選ぶ
-    //   r.set(0, 1, 0);
-    // }
     // ローカル軸となる2つのベクトルを計算
     const u = new THREE.Vector3().crossVectors(n, r).normalize();
     const v = new THREE.Vector3().crossVectors(n, u).normalize();
@@ -429,7 +470,6 @@ class SPALAM {
     );
     if (!centerPoint) return {};
     const P0 = centerPoint;
-    // const P0 = planeModel.inliers[0]; // 一旦0番目
     const projectedPoints2D = projectInliersToPlane2D({
       inliers: planeModel.inliers,
       P0: P0,
@@ -454,6 +494,10 @@ class SPALAM {
     };
   }
 
+  /**
+   * レンダリングループ
+   * 特徴点検出、平面推定、ARレンダリングを実行
+   */
   public render() {
     if (this.featureDetector) {
       this.featureDetector.render();

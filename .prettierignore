@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+*.js
+!*.config.js
+.vite/
+public/
+package-lock.json
