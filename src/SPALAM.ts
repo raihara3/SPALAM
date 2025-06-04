@@ -18,6 +18,8 @@ import { StateManager, SPALAMState } from "./services/StateManager";
 
 // utils
 import { CameraController } from "./utils/CameraController";
+import { ServiceContainer } from "./utils/ServiceContainer";
+import { IServiceProvider } from "./interfaces/IServiceProvider";
 
 // config
 import { SPALAMConfig } from "./config/types";
@@ -28,7 +30,7 @@ import { getEnvConfig } from "./config/environment";
  * SPALAMメインクラス
  * WebGL/Three.jsを使用したAR環境での平面推定を実装
  */
-class SPALAM {
+class SPALAM implements IServiceProvider {
   /** ビデオ入力 */
   private video: HTMLVideoElement | null = null;
   /** ARレンダラー */
@@ -42,7 +44,13 @@ class SPALAM {
   /** 設定 */
   private config: SPALAMConfig;
 
-  constructor(config?: Partial<SPALAMConfig>) {
+  /** サービスコンテナ */
+  private container: ServiceContainer;
+
+  constructor(
+    config?: Partial<SPALAMConfig>,
+    serviceProvider?: IServiceProvider
+  ) {
     // 環境変数とマージ
     const envConfig = getEnvConfig();
     const mergedConfig = mergeWithDefaults(config);
@@ -60,10 +68,29 @@ class SPALAM {
 
     this.config = mergedConfig;
 
-    // サービスの初期化
-    this.planeFittingService = new PlaneFittingService(this.config.plane);
-    this.frameProcessor = new FrameProcessor();
-    this.stateManager = new StateManager();
+    // サービスコンテナの初期化
+    this.container = new ServiceContainer();
+
+    // サービスの初期化（DIで上書き可能）
+    if (serviceProvider) {
+      // 外部サービスプロバイダーからサービスを取得
+      this.planeFittingService = serviceProvider.getService(
+        "planeFittingService"
+      );
+      this.frameProcessor = serviceProvider.getService("frameProcessor");
+      this.stateManager = serviceProvider.getService("stateManager");
+    } else {
+      // デフォルトサービスを作成
+      this.planeFittingService = new PlaneFittingService(this.config.plane);
+      this.frameProcessor = new FrameProcessor();
+      this.stateManager = new StateManager();
+    }
+
+    // コンテナにサービスを登録
+    this.container.register("config", this.config);
+    this.container.register("planeFittingService", this.planeFittingService);
+    this.container.register("frameProcessor", this.frameProcessor);
+    this.container.register("stateManager", this.stateManager);
   }
 
   /**
@@ -380,6 +407,20 @@ class SPALAM {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
+  }
+
+  /**
+   * サービスを取得（IServiceProvider実装）
+   */
+  public getService<T>(name: string): T {
+    return this.container.resolve<T>(name);
+  }
+
+  /**
+   * サービスが利用可能かチェック（IServiceProvider実装）
+   */
+  public hasService(name: string): boolean {
+    return this.container.has(name);
   }
 }
 
