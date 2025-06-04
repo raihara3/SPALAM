@@ -47,9 +47,9 @@ SPALAM のリファクタリング計画。現状の課題を整理し、段階�
 
 #### 2.1 機能分割
 
-- [ ] `PlaneFittingService`の分離・最適化
-- [ ] `FrameProcessor`の責務分離・整理
-- [ ] `StateManager`の保守性向上
+- [x] `PlaneFittingService`の分離・最適化
+- [x] `FrameProcessor`の責務分離・整理
+- [x] `StateManager`の保守性向上
 
 #### 2.2 非同期処理最適化
 

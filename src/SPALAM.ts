@@ -6,24 +6,23 @@ import cv from "@techstark/opencv-js";
 import { Point2D, Point3D } from "./types";
 
 // modules
-import { FeatureDetector } from "./FeatureDetector";
-import { DepthEstimation } from "./DepthEstimation";
 import { ARRenderer } from "./ARRenderer";
+
+// services
+import {
+  PlaneFittingService,
+  PlaneFittingResult,
+} from "./services/PlaneFittingService";
+import { FrameProcessor } from "./services/FrameProcessor";
+import { StateManager, SPALAMState } from "./services/StateManager";
 
 // utils
 import { CameraController } from "./utils/CameraController";
 
-// helpers
-import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
-import backProjectPoints from "./helpers/backProjectPoints";
-import fitPlaneRANSAC, {
-  filterByDepth,
-  distancePointToPlane,
-} from "./helpers/fitPlaneRANSAC";
-import projectInliersToPlane2D from "./helpers/projectInliersToPlane2D";
-import computeConvexHull2D from "./helpers/computeConvexHull2D";
-import liftHull2DTo3D from "./helpers/liftHull2DTo3D";
-import { weightedPlaneFit2D } from "./helpers/weightedPlaneFit2D";
+// config
+import { SPALAMConfig } from "./config/types";
+import { mergeWithDefaults } from "./config/defaults";
+import { getEnvConfig } from "./config/environment";
 
 /**
  * SPALAMメインクラス
@@ -31,35 +30,40 @@ import { weightedPlaneFit2D } from "./helpers/weightedPlaneFit2D";
  */
 class SPALAM {
   /** ビデオ入力 */
-  video: HTMLVideoElement | null;
-  /** 特徴点検出器 */
-  featureDetector: FeatureDetector | null = null;
-  /** 深度推定モジュール */
-  depthEstimation: DepthEstimation | null = null;
+  private video: HTMLVideoElement | null = null;
   /** ARレンダラー */
-  arRenderer: ARRenderer | null = null;
+  private arRenderer: ARRenderer | null = null;
 
-  /** Three.jsグループオブジェクト */
-  group: THREE.Group | null = null;
+  /** サービス */
+  private planeFittingService: PlaneFittingService;
+  private frameProcessor: FrameProcessor;
+  private stateManager: StateManager;
 
-  /** フィッティング回数を制限するための定数 */
-  private readonly MAX_FITTING_COUNT: number = 3;
-  /** 現在のフィッティング回数 */
-  private fittingCount: number = 0;
+  /** 設定 */
+  private config: SPALAMConfig;
 
-  /** 3回分の平面推定結果を保存する配列 */
-  private fittingResults: Array<{
-    hull2D: Point2D[];
-    hull3D: Point3D[];
-    P0: Point3D;
-    uVec: THREE.Vector3;
-    vVec: THREE.Vector3;
-    normal: THREE.Vector3;
-  }> = [];
+  constructor(config?: Partial<SPALAMConfig>) {
+    // 環境変数とマージ
+    const envConfig = getEnvConfig();
+    const mergedConfig = mergeWithDefaults(config);
 
-  constructor() {
-    this.video = null;
-    this.group = null;
+    // 環境変数からの設定を適用
+    if (envConfig.showFeatures !== undefined) {
+      mergedConfig.features.showFeatures = envConfig.showFeatures;
+    }
+    if (envConfig.showDepth !== undefined) {
+      mergedConfig.depth.showDepth = envConfig.showDepth;
+    }
+    if (envConfig.device) {
+      mergedConfig.depth.device = envConfig.device as "cpu" | "webgpu";
+    }
+
+    this.config = mergedConfig;
+
+    // サービスの初期化
+    this.planeFittingService = new PlaneFittingService(this.config.plane);
+    this.frameProcessor = new FrameProcessor();
+    this.stateManager = new StateManager();
   }
 
   /**
@@ -67,44 +71,56 @@ class SPALAM {
    * @param options - 開始オプション
    * @param options.video - 使用するビデオ要素（省略時はカメラを使用）
    */
-  public start({ video = null }: { video?: HTMLVideoElement | null } = {}) {
+  public async start({
+    video = null,
+  }: { video?: HTMLVideoElement | null } = {}): Promise<void> {
+    this.stateManager.setState(SPALAMState.INITIALIZING);
+
     const setup = async () => {
-      if (video) {
-        this.video = video;
-      } else {
-        const cameraController = new CameraController();
-        await cameraController.initCamera();
-        this.video = cameraController.getVideo();
+      try {
+        if (video) {
+          this.video = video;
+        } else {
+          const cameraController = new CameraController();
+          await cameraController.initCamera();
+          this.video = cameraController.getVideo();
+        }
+        this.video.style.display = "none";
+        console.debug("Video element:", this.video);
+
+        this.arRenderer = new ARRenderer({
+          width: this.video.width,
+          height: this.video.height,
+        });
+
+        // フレームプロセッサーを初期化
+        await this.frameProcessor.initialize(
+          cv,
+          this.video,
+          this.config.features.showFeatures,
+          this.config.depth.showDepth
+        );
+
+        this.stateManager.setState(SPALAMState.DETECTING_FEATURES);
+        this.render();
+      } catch (error) {
+        this.stateManager.setError(error as Error);
+        throw error;
       }
-      this.video.style.display = "none";
-      console.debug("Video element:", this.video);
-
-      this.arRenderer = new ARRenderer({
-        width: this.video.width,
-        height: this.video.height,
-      });
-
-      this.featureDetector = new FeatureDetector({
-        cv,
-        video: this.video,
-        showFeatures: true,
-      });
-
-      this.depthEstimation = new DepthEstimation({
-        canvas: this.featureDetector!.canvas,
-        context: this.featureDetector!.ctx,
-        showDepth: true,
-      });
-      await this.depthEstimation.loadModel();
-
-      this.render();
     };
 
-    cv.onRuntimeInitialized = async () => {
-      console.log(cv.getBuildInformation());
-      await setup();
-      this.setGroupPosition();
-    };
+    return new Promise((resolve, reject) => {
+      cv.onRuntimeInitialized = async () => {
+        console.log(cv.getBuildInformation());
+        try {
+          await setup();
+          this.processPlaneDetection();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
   }
 
   /**
@@ -213,300 +229,157 @@ class SPALAM {
   }
 
   /**
-   * 3回分の結果から平均値を計算する
-   * @returns 平均化された結果またはnull
+   * 平面検出処理
    */
-  private calculateAverageResults() {
-    if (this.fittingResults.length !== this.MAX_FITTING_COUNT) {
-      return null;
-    }
-
-    const results = this.fittingResults;
-
-    // P0の平均を計算
-    const avgP0 = {
-      x: results.reduce((sum, r) => sum + r.P0.x, 0) / results.length,
-      y: results.reduce((sum, r) => sum + r.P0.y, 0) / results.length,
-      z: results.reduce((sum, r) => sum + r.P0.z, 0) / results.length,
-    };
-
-    // ベクトルの平均を計算
-    const avgUVec = new THREE.Vector3(
-      results.reduce((sum, r) => sum + r.uVec.x, 0) / results.length,
-      results.reduce((sum, r) => sum + r.uVec.y, 0) / results.length,
-      results.reduce((sum, r) => sum + r.uVec.z, 0) / results.length
-    ).normalize();
-
-    const avgVVec = new THREE.Vector3(
-      results.reduce((sum, r) => sum + r.vVec.x, 0) / results.length,
-      results.reduce((sum, r) => sum + r.vVec.y, 0) / results.length,
-      results.reduce((sum, r) => sum + r.vVec.z, 0) / results.length
-    ).normalize();
-
-    const avgNormal = new THREE.Vector3(
-      results.reduce((sum, r) => sum + r.normal.x, 0) / results.length,
-      results.reduce((sum, r) => sum + r.normal.y, 0) / results.length,
-      results.reduce((sum, r) => sum + r.normal.z, 0) / results.length
-    ).normalize();
-
-    // hull2Dの平均を計算（最初の結果のhull2Dの構造を基準とする）
-    const baseHull2D = results[0].hull2D;
-    const avgHull2D = baseHull2D.map((_, i) => ({
-      u:
-        results.reduce((sum, r) => sum + (r.hull2D[i]?.u || 0), 0) /
-        results.length,
-      v:
-        results.reduce((sum, r) => sum + (r.hull2D[i]?.v || 0), 0) /
-        results.length,
-    }));
-
-    // hull3Dの平均を計算
-    const baseHull3D = results[0].hull3D;
-    const avgHull3D = baseHull3D.map((_, i) => ({
-      x:
-        results.reduce((sum, r) => sum + (r.hull3D[i]?.x || 0), 0) /
-        results.length,
-      y:
-        results.reduce((sum, r) => sum + (r.hull3D[i]?.y || 0), 0) /
-        results.length,
-      z:
-        results.reduce((sum, r) => sum + (r.hull3D[i]?.z || 0), 0) /
-        results.length,
-    }));
-
-    return {
-      hull2D: avgHull2D,
-      hull3D: avgHull3D,
-      P0: avgP0,
-      uVec: avgUVec,
-      vVec: avgVVec,
-      normal: avgNormal,
-    };
-  }
-
-  /**
-   * 平面の生成と配置
-   * 3回の平面推定を実行し、平均化した結果を使用して平面を配置
-   */
-  public async setGroupPosition() {
-    // 3回分の推定を実行
-    if (this.fittingCount < this.MAX_FITTING_COUNT) {
-      const result = await this.getPoints3D();
-      if (result.hull3D) {
-        this.fittingResults.push(result);
-        this.fittingCount++;
-        console.log(
-          `フィッティング完了: ${this.fittingCount}/${this.MAX_FITTING_COUNT}`
-        );
-      }
+  private async processPlaneDetection(): Promise<void> {
+    // 既に平面が検出されている場合はスキップ
+    if (this.stateManager.isPlaneDetected()) {
       return;
     }
 
-    // 3回完了後、まだ平面が作成されていない場合のみ作成
-    if (!this.group) {
-      const avgResult = this.calculateAverageResults();
-      if (!avgResult) return;
+    this.stateManager.setState(SPALAMState.FITTING_PLANE);
 
-      const { hull2D, hull3D, P0, uVec, vVec, normal } = avgResult;
+    const processInterval = setInterval(async () => {
+      // フレーム処理
+      const frameResult = await this.frameProcessor.processFrame();
+      if (!frameResult || !frameResult.centerFeature || !frameResult.depthMap) {
+        return;
+      }
 
-      // 中心点の計算
-      const center = new THREE.Vector3();
-      hull3D.forEach((p) => center.add(new THREE.Vector3(p.x, p.y, p.z)));
-      center.divideScalar(hull3D.length);
-
-      // バウンディングボックスの計算
-      const us = hull2D.map((p) => p.u),
-        vs = hull2D.map((p) => p.v);
-      const minU = Math.min(...us),
-        maxU = Math.max(...us);
-      const minV = Math.min(...vs),
-        maxV = Math.max(...vs);
-      const planeWidth = maxU - minU;
-      const planeHeight = maxV - minV;
-      const midU = (minU + maxU) / 2;
-      const midV = (minV + maxV) / 2;
-
-      // ジオメトリの生成
-      const scene = this.arRenderer!.getScene();
-      this.group = new THREE.Group();
-      const { planeMesh } = this.createPlaneGeometries(
-        hull2D,
-        planeWidth,
-        planeHeight
-      );
-      this.group.add(planeMesh);
-      scene.add(this.group);
-
-      // 位置と回転の調整
-      this.adjustMeshTransform(
-        this.group,
-        P0,
-        center,
-        uVec,
-        vVec,
-        normal,
-        midU,
-        midV,
-        true
+      // 平面フィッティングを実行
+      await this.planeFittingService.performFitting(
+        frameResult.features,
+        frameResult.depthMap,
+        this.frameProcessor.getCanvasWidth(),
+        this.frameProcessor.getCanvasHeight(),
+        frameResult.centerFeature
       );
 
-      console.log("平面配置完了:", this.group.position);
-      this.arRenderer?.setCameraPosition(0, 0, this.group.position.z * 2);
-    }
+      // フィッティングが完了したかチェック
+      if (this.planeFittingService.isComplete()) {
+        clearInterval(processInterval);
+
+        // 平均化された結果を取得
+        const avgResult = this.planeFittingService.getAveragedResult();
+        if (avgResult) {
+          this.createPlaneFromResult(avgResult);
+          this.stateManager.setPlaneDetected(true, avgResult);
+        }
+      } else {
+        // 進捗をログ
+        const progress = this.planeFittingService.getProgress();
+        console.log(
+          `フィッティング完了: ${progress.current}/${progress.total}`
+        );
+      }
+    }, 100); // 100msごとに処理
   }
 
   /**
-   * 特徴点の3D座標を取得し、平面フィッティングを実行
-   * @returns 平面推定結果
+   * 平面を結果から作成
    */
-  private async getPoints3D() {
-    if (!this.depthEstimation || !this.featureDetector) return {};
+  private createPlaneFromResult(result: PlaneFittingResult): void {
+    const { hull2D, hull3D, P0, uVec, vVec, normal } = result;
 
-    // 中心特徴点が設定されていない場合は処理を中断
-    if (!this.featureDetector.centerFeature) return {};
+    // 中心点の計算
+    const center = new THREE.Vector3();
+    hull3D.forEach((p) => center.add(new THREE.Vector3(p.x, p.y, p.z)));
+    center.divideScalar(hull3D.length);
 
-    // 検出済みの特徴点と深度マップを使い、各特徴点の3D座標を計算
-    const depthMap = await this.depthEstimation.getDepthMap();
-    if (!depthMap) return {};
-    const points3D = sampleDepthAtFeaturePoints({
-      featurePoints: this.featureDetector!.getTrackedFeaturePoints(),
-      depthMap: depthMap,
-      mapWidth: this.featureDetector!.canvas.width,
-      mapHeight: this.featureDetector!.canvas.height,
-    });
+    // バウンディングボックスの計算
+    const us = hull2D.map((p) => p.u),
+      vs = hull2D.map((p) => p.v);
+    const minU = Math.min(...us),
+      maxU = Math.max(...us);
+    const minV = Math.min(...vs),
+      maxV = Math.max(...vs);
+    const planeWidth = maxU - minU;
+    const planeHeight = maxV - minV;
+    const midU = (minU + maxU) / 2;
+    const midV = (minV + maxV) / 2;
 
-    // 特徴点の3D座標からカメラ座標を復元
-    const points3DBackProjected = backProjectPoints(points3D);
-    // 外れ値やノイズを除去
-    let filterdPoints3D = filterByDepth(points3DBackProjected, 0.025);
-
-    // 平面モデルをRANSACでフィッティング
-    const planeModel = fitPlaneRANSAC({
-      points: filterdPoints3D,
-    });
-    if (!planeModel.model) return {};
-
-    const inliers = planeModel.inliers; // [{X,Y,Z},…]
-    const tracked = this.featureDetector.trackedFeatures; // [{x,y,trackingCount},…]
-    const mapW = this.featureDetector.canvas.width,
-      mapH = this.featureDetector.canvas.height;
-
-    const weights = inliers.map((pt, i) => {
-      // reprojection error weight（平面からの距離による重み）
-      if (!planeModel.model) return 0;
-      const d = distancePointToPlane(pt, planeModel.model);
-      const w_reproj = Math.exp((-d / 0.5) ** 2);
-
-      // depth gradient weight（深度の勾配による重み）
-      const x = Math.round(Math.min(Math.max(pt.x, 0), mapW - 1));
-      const y = Math.round(Math.min(Math.max(pt.y, 0), mapH - 1));
-
-      // 深度の勾配計算を安全に
-      const gx =
-        x > 0 && x < mapW - 1
-          ? Math.abs(
-              depthMap[y * mapW + (x + 1)] - depthMap[y * mapW + (x - 1)]
-            )
-          : 0;
-      const gy =
-        y > 0 && y < mapH - 1
-          ? Math.abs(
-              depthMap[(y + 1) * mapW + x] - depthMap[(y - 1) * mapW + x]
-            )
-          : 0;
-
-      // 勾配の重みのスケールを調整
-      const w_grad = 1 / (1 + (gx + gy));
-
-      // tracking stability weight（追跡安定性による重み）
-      const trackCount = tracked[i]?.trackingCount ?? 1;
-      const w_track = Math.min(trackCount / 5, 1);
-
-      // 各重みの下限を設定
-      const minWeight = 0.1;
-      const finalWeight = Math.max(w_reproj * w_grad * w_track, minWeight);
-
-      // NaNチェック
-      return isNaN(finalWeight) ? minWeight : finalWeight;
-    });
-
-    const { a, b, c } = weightedPlaneFit2D(inliers, weights);
-
-    // NaNチェックと異常値の補正
-    const isValidNumber = (n: number) => !isNaN(n) && isFinite(n);
-    const safeA = isValidNumber(a) ? a : 0;
-    const safeB = isValidNumber(b) ? b : 0;
-    const safeC = isValidNumber(c) ? c : -1;
-
-    // デバッグ用のログ
-    console.log("Weights:", weights);
-    console.log("Plane parameters:", { a: safeA, b: safeB, c: safeC });
-
-    const refinedModel = {
-      a: safeA,
-      b: safeB,
-      c: -1,
-      d: safeC,
-    };
-
-    const n = new THREE.Vector3(
-      refinedModel.a,
-      refinedModel.b,
-      refinedModel.c
-    ).normalize();
-    // 法線ベクトルが有効か確認
-    if (n.lengthSq() === 0) {
-      n.set(0, 0, 1); // デフォルトの法線を設定
-    }
-
-    // 平面と直交しない参照ベクトル
-    let r = new THREE.Vector3(0, 1, 0);
-    // ローカル軸となる2つのベクトルを計算
-    const u = new THREE.Vector3().crossVectors(n, r).normalize();
-    const v = new THREE.Vector3().crossVectors(n, u).normalize();
-    // 各inlier点の3D座標を平面座標(u,v)に射影
-    const centerPoint = points3DBackProjected.find(
-      (p) => p.id === this.featureDetector!.centerFeature!.id
-    );
-    if (!centerPoint) return {};
-    const P0 = centerPoint;
-    const projectedPoints2D = projectInliersToPlane2D({
-      inliers: planeModel.inliers,
-      P0: P0,
-      u: u,
-      v: v,
-    });
-    // 平面領域を覆う最小ポリゴンの取得
-    const hull2D = computeConvexHull2D(projectedPoints2D);
-    const hull3D = liftHull2DTo3D({
-      hull2D: hull2D,
-      P0: P0,
-      uVec: u,
-      vVec: v,
-    });
-    return {
+    // ジオメトリの生成
+    const scene = this.arRenderer!.getScene();
+    const group = new THREE.Group();
+    const { planeMesh } = this.createPlaneGeometries(
       hull2D,
-      hull3D,
+      planeWidth,
+      planeHeight
+    );
+    group.add(planeMesh);
+    scene.add(group);
+
+    // 位置と回転の調整
+    this.adjustMeshTransform(
+      group,
       P0,
-      uVec: u,
-      vVec: v,
-      normal: r,
-    };
+      center,
+      uVec,
+      vVec,
+      normal,
+      midU,
+      midV,
+      true
+    );
+
+    // 状態マネージャーに保存
+    this.stateManager.setPlaneGroup(group);
+    console.log("平面配置完了:", group.position);
+    this.arRenderer?.setCameraPosition(0, 0, group.position.z * 2);
   }
 
   /**
    * レンダリングループ
-   * 特徴点検出、平面推定、ARレンダリングを実行
+   * ARレンダリングを実行
    */
   public render() {
-    if (this.featureDetector) {
-      this.featureDetector.render();
+    // 常に特徴点検出は実行（カメラ映像の更新のため）
+    if (this.frameProcessor.isReady()) {
+      this.frameProcessor.renderFeatures();
     }
-    this.setGroupPosition();
+
     if (this.arRenderer) {
       this.arRenderer.render();
     }
     requestAnimationFrame(() => this.render());
+  }
+
+  /**
+   * 現在の状態を取得
+   */
+  public getState(): SPALAMState {
+    return this.stateManager.getState();
+  }
+
+  /**
+   * 状態変更リスナーを登録
+   */
+  public onStateChange(listener: (event: any) => void): void {
+    this.stateManager.addListener(listener);
+  }
+
+  /**
+   * 設定を更新
+   */
+  public updateConfig(config: Partial<SPALAMConfig>): void {
+    this.config = mergeWithDefaults({
+      ...this.config,
+      ...config,
+    });
+
+    // 各サービスの設定を更新
+    if (config.plane) {
+      this.planeFittingService.updateConfig(config.plane);
+    }
+  }
+
+  /**
+   * リセット
+   */
+  public reset(): void {
+    this.stateManager.reset();
+    this.planeFittingService.reset();
+    this.frameProcessor.reset();
   }
 }
 
