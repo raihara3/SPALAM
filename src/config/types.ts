@@ -2,6 +2,16 @@
  * SPALAM設定型定義
  */
 
+import { 
+  FeatureDetectionAlgorithm, 
+  AlgorithmConfig,
+  HarrisParams,
+  ShiTomasiParams,
+  FastParams,
+  OrbParams,
+  SiftParams
+} from "../types/FeatureDetectionAlgorithm";
+
 /**
  * 特徴点検出の設定
  */
@@ -33,6 +43,22 @@ export interface FeatureDetectorConfig {
     /** 高さ（画像高さに対する比率） */
     height: number;
   };
+  /** 使用する特徴点検出アルゴリズム */
+  algorithms: AlgorithmConfig[];
+  /** アルゴリズム固有のパラメータ設定 */
+  algorithmParams: {
+    harris?: HarrisParams;
+    shiTomasi?: ShiTomasiParams;
+    fast?: FastParams;
+    orb?: OrbParams;
+    sift?: SiftParams;
+  };
+  /** Web Worker を使用するか */
+  useWebWorker: boolean;
+  /** 特徴点の統合戦略 */
+  mergeStrategy: "union" | "intersection" | "weighted";
+  /** 重み付きマージ時の重み設定 */
+  algorithmWeights?: Record<FeatureDetectionAlgorithm, number>;
 }
 
 /**
