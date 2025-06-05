@@ -1,5 +1,6 @@
 import { SPALAMConfig } from "./types";
 import { FeatureDetectionAlgorithm } from "../types/FeatureDetectionAlgorithm";
+import { DepthEstimationModel, InferenceEngine } from "../types/DepthEstimationModel";
 
 /**
  * SPALAMのデフォルト設定
@@ -75,6 +76,41 @@ export const defaultConfig: SPALAMConfig = {
     device: "webgpu",
     showDepth: true,
     inputSize: 504,
+    availableModels: [
+      DepthEstimationModel.DEPTH_ANYTHING_V2_SMALL,
+      DepthEstimationModel.DEPTH_ANYTHING_V2_BASE,
+      DepthEstimationModel.MIDAS_SMALL
+    ],
+    pipeline: {
+      model: {
+        modelId: DepthEstimationModel.DEPTH_ANYTHING_V2_SMALL,
+        inputSize: 504
+      },
+      engine: {
+        engine: InferenceEngine.WEBGPU,
+        device: "gpu",
+        precision: "fp32"
+      },
+      parallel: {
+        useWorker: false,
+        numWorkers: 2
+      },
+      postProcessing: {
+        gaussianBlur: false,
+        bilateralFilter: true,
+        temporalSmoothing: true
+      }
+    },
+    cache: {
+      enableFrameCache: true,
+      cacheSize: 5,
+      cacheTTL: 100
+    },
+    performance: {
+      skipFrames: 0,
+      maxFPS: 30,
+      adaptiveQuality: true
+    }
   },
   plane: {
     ransacIterations: 100,
@@ -131,6 +167,19 @@ export function mergeWithDefaults(
     depth: {
       ...defaultConfig.depth,
       ...(config.depth || {}),
+      pipeline: {
+        ...defaultConfig.depth.pipeline,
+        ...(config.depth?.pipeline || {}),
+        model: config.depth?.pipeline?.model || defaultConfig.depth.pipeline!.model,
+        engine: config.depth?.pipeline?.engine || defaultConfig.depth.pipeline!.engine,
+        parallel: config.depth?.pipeline?.parallel || defaultConfig.depth.pipeline?.parallel,
+        postProcessing: {
+          ...defaultConfig.depth.pipeline?.postProcessing,
+          ...(config.depth?.pipeline?.postProcessing || {}),
+        },
+      },
+      cache: config.depth?.cache || defaultConfig.depth.cache,
+      performance: config.depth?.performance || defaultConfig.depth.performance,
     },
     plane: {
       ...defaultConfig.plane,

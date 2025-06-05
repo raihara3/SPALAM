@@ -12,6 +12,11 @@ import {
   SiftParams
 } from "../types/FeatureDetectionAlgorithm";
 
+import { 
+  DepthEstimationModel,
+  DepthPipelineConfig
+} from "../types/DepthEstimationModel";
+
 /**
  * 特徴点検出の設定
  */
@@ -73,6 +78,28 @@ export interface DepthEstimationConfig {
   showDepth: boolean;
   /** モデル入力サイズ */
   inputSize: number;
+  /** 利用可能なモデルリスト */
+  availableModels?: DepthEstimationModel[];
+  /** パイプライン設定 */
+  pipeline?: DepthPipelineConfig;
+  /** キャッシュ設定 */
+  cache?: {
+    /** フレームキャッシュを有効にするか */
+    enableFrameCache: boolean;
+    /** キャッシュサイズ */
+    cacheSize: number;
+    /** キャッシュ有効期限（ミリ秒） */
+    cacheTTL: number;
+  };
+  /** パフォーマンス設定 */
+  performance?: {
+    /** スキップフレーム数 */
+    skipFrames: number;
+    /** 最大FPS */
+    maxFPS: number;
+    /** 適応的品質調整 */
+    adaptiveQuality: boolean;
+  };
 }
 
 /**
