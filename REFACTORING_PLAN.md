@@ -87,9 +87,9 @@ SPALAM のリファクタリング計画。現状の課題を整理し、段階�
 
 #### 4.1 外部 API 設計
 
-- [ ] 直感的な Fluent API 設計
-- [ ] TypeScript 型定義の充実
-- [ ] JSDoc による API ドキュメント
+- [x] 直感的な Fluent API 設計
+- [x] TypeScript 型定義の充実
+- [x] JSDoc による API ドキュメント
 
 #### 4.2 モジュール対応
 

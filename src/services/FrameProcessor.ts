@@ -83,7 +83,7 @@ export class FrameProcessor {
       timestamp: Date.now(),
     };
   }
-  
+
   /**
    * 特徴点検出のみを実行（深度推定なし）
    */
@@ -115,10 +115,42 @@ export class FrameProcessor {
   }
 
   /**
+   * 特徴点を取得（getTrackedFeaturesのエイリアス）
+   */
+  public getFeatures(): Feature[] {
+    return this.getTrackedFeatures();
+  }
+
+  /**
+   * 中心特徴点を取得
+   */
+  public getCenterFeature(): Feature | null {
+    return this.featureDetector?.centerFeature || null;
+  }
+
+  /**
+   * 現在の深度マップを取得
+   */
+  public async getDepthMap(): Promise<Float32Array | null> {
+    if (!this.depthEstimation) {
+      return null;
+    }
+    const depthMap = await this.depthEstimation.getDepthMap();
+    return depthMap || null;
+  }
+
+  /**
    * リセット
    */
   public reset(): void {
     this.featureDetector?.reset();
+  }
+
+  /**
+   * 処理を停止
+   */
+  public stop(): void {
+    this.reset();
   }
 
   /**

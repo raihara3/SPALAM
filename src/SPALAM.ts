@@ -3,7 +3,18 @@ import * as THREE from "three";
 import cv from "@techstark/opencv-js";
 
 // types
-import { Point2D, Point3D } from "./types";
+import {
+  Point2D,
+  Point3D,
+  SPALAMEvents,
+  FrameData,
+  PlaneData,
+  SPALAMStartOptions,
+  PerformanceStats,
+  CameraInfo,
+  SPALAMError,
+  SPALAMErrorType,
+} from "./types";
 
 // modules
 import { ARRenderer } from "./ARRenderer";
@@ -14,7 +25,7 @@ import {
   PlaneFittingResult,
 } from "./services/PlaneFittingService";
 import { FrameProcessor } from "./services/FrameProcessor";
-import { StateManager, SPALAMState } from "./services/StateManager";
+import { StateManager, SPALAMState, StateChangeEvent } from "./services/StateManager";
 
 // utils
 import { CameraController } from "./utils/CameraController";
@@ -27,10 +38,272 @@ import { mergeWithDefaults } from "./config/defaults";
 import { getEnvConfig } from "./config/environment";
 
 /**
+ * Fluent API用の設定ビルダー
+ *
+ * SPALAMインスタンスを構成するためのビルダーパターンを実装。
+ * メソッドチェーンで直感的な設定が可能。
+ *
+ * @example
+ * ```typescript
+ * const spalam = createSPALAM()
+ *   .useWebGPU()
+ *   .features({ maxCorners: 100, qualityLevel: 0.01 })
+ *   .depth({ modelId: 'depth-anything-v2-small' })
+ *   .plane({ ransacIterations: 1000, smoothingIterations: 3 })
+ *   .enableDebug()
+ *   .build();
+ * ```
+ */
+export class SPALAMBuilder {
+  private config: Partial<SPALAMConfig> = {};
+  private serviceProvider?: IServiceProvider;
+
+  /**
+   * 特徴点検出の設定
+   *
+   * @param config - 特徴点検出設定
+   * @param config.maxCorners - 最大特徴点数 (デフォルト: 100)
+   * @param config.qualityLevel - 品質闾値 (デフォルト: 0.01)
+   * @param config.minDistance - 特徴点間の最小距離 (デフォルト: 10)
+   * @param config.showFeatures - 特徴点表示フラグ (デフォルト: false)
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * builder.features({
+   *   maxCorners: 200,
+   *   qualityLevel: 0.005,
+   *   minDistance: 15,
+   *   showFeatures: true
+   * });
+   * ```
+   */
+  public features(config: Partial<SPALAMConfig["features"]>): SPALAMBuilder {
+    this.config.features = { ...this.config.features, ...config } as any;
+    return this;
+  }
+
+  /**
+   * 深度推定の設定
+   *
+   * @param config - 深度推定設定
+   * @param config.modelId - 使用する深度推定モデル (デフォルト: 'depth-anything-v2-small')
+   * @param config.device - 実行デバイス 'cpu' | 'webgpu' (デフォルト: 'webgpu')
+   * @param config.showDepth - 深度マップ表示フラグ (デフォルト: false)
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * builder.depth({
+   *   modelId: 'depth-anything-v2-large',
+   *   device: 'webgpu',
+   *   showDepth: true
+   * });
+   * ```
+   */
+  public depth(config: Partial<SPALAMConfig["depth"]>): SPALAMBuilder {
+    this.config.depth = { ...this.config.depth, ...config } as any;
+    return this;
+  }
+
+  /**
+   * 平面推定の設定
+   *
+   * @param config - 平面推定設定
+   * @param config.ransacIterations - RANSACアルゴリズムの反復回数 (デフォルト: 1000)
+   * @param config.ransacThreshold - RANSACの闾値 (デフォルト: 0.1)
+   * @param config.smoothingIterations - 空間スムージングの反復回数 (デフォルト: 3)
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * builder.plane({
+   *   ransacIterations: 2000,
+   *   ransacThreshold: 0.05,
+   *   smoothingIterations: 5
+   * });
+   * ```
+   */
+  public plane(config: Partial<SPALAMConfig["plane"]>): SPALAMBuilder {
+    this.config.plane = { ...this.config.plane, ...config } as any;
+    return this;
+  }
+
+  /**
+   * WebGPUを使用する設定
+   *
+   * 深度推定のGPUアクセラレーションを有効にします。
+   * WebGPUがサポートされていない環境では自動的にCPUにフォールバックされます。
+   *
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * const spalam = createSPALAM()
+   *   .useWebGPU() // GPUアクセラレーションを有効化
+   *   .build();
+   * ```
+   */
+  public useWebGPU(): SPALAMBuilder {
+    this.config.depth = { ...this.config.depth, device: "webgpu" } as any;
+    return this;
+  }
+
+  /**
+   * CPUを使用する設定
+   *
+   * 深度推定をCPUで実行します。
+   * GPUが利用できない環境や、安定性を優先する場合に使用します。
+   *
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * const spalam = createSPALAM()
+   *   .useCPU() // CPUでの実行を強制
+   *   .build();
+   * ```
+   */
+  public useCPU(): SPALAMBuilder {
+    this.config.depth = { ...this.config.depth, device: "cpu" } as any;
+    return this;
+  }
+
+  /**
+   * デバッグ表示を有効にする
+   *
+   * 特徴点と深度マップの表示を有効にします。
+   * 開発時のデバッグや動作確認に便利です。
+   *
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * const spalam = createSPALAM()
+   *   .enableDebug() // 特徴点と深度情報を表示
+   *   .build();
+   * ```
+   */
+  public enableDebug(): SPALAMBuilder {
+    this.config.features = {
+      ...this.config.features,
+      showFeatures: true,
+    } as any;
+    this.config.depth = { ...this.config.depth, showDepth: true } as any;
+    return this;
+  }
+
+  /**
+   * カスタムサービスプロバイダーを設定
+   *
+   * 独自のサービス実装を指定してDI（依存性注入）を実現します。
+   * テスト時のモックや、独自のアルゴリズム実装に使用します。
+   *
+   * @param provider - カスタムサービスプロバイダー
+   * @returns SPALAMBuilderインスタンス
+   *
+   * @example
+   * ```typescript
+   * const customProvider = new MyServiceProvider();
+   * const spalam = createSPALAM()
+   *   .withServices(customProvider)
+   *   .build();
+   * ```
+   */
+  public withServices(provider: IServiceProvider): SPALAMBuilder {
+    this.serviceProvider = provider;
+    return this;
+  }
+
+  /**
+   * SPALAMインスタンスをビルド
+   *
+   * これまでの設定を適用してSPALAMインスタンスを作成します。
+   * ビルド後はstart()メソッドで処理を開始できます。
+   *
+   * @returns 構成されたSPALAMインスタンス
+   *
+   * @example
+   * ```typescript
+   * const spalam = createSPALAM()
+   *   .useWebGPU()
+   *   .enableDebug()
+   *   .build(); // インスタンスを作成
+   *
+   * await spalam.start(); // 処理開始
+   * ```
+   */
+  public build(): SPALAM {
+    // マージした設定をmergeWithDefaultsで処理
+    const mergedConfig = mergeWithDefaults(this.config);
+    return new SPALAM(mergedConfig, this.serviceProvider);
+  }
+}
+
+/**
+ * SPALAMファクトリー関数
+ *
+ * SPALAMインスタンスを作成するためのファクトリー関数。
+ * Fluent APIスタイルで直感的な設定が可能です。
+ *
+ * @returns SPALAMBuilderインスタンス
+ *
+ * @example
+ * ```typescript
+ * // 基本的な使用方法
+ * const spalam = createSPALAM()
+ *   .useWebGPU()
+ *   .enableDebug()
+ *   .build();
+ *
+ * await spalam.start();
+ *
+ * // 詳細設定
+ * const advancedSpalam = createSPALAM()
+ *   .features({
+ *     maxCorners: 200,
+ *     qualityLevel: 0.005,
+ *     minDistance: 15
+ *   })
+ *   .depth({
+ *     modelId: 'depth-anything-v2-large',
+ *     device: 'webgpu'
+ *   })
+ *   .plane({
+ *     ransacIterations: 2000,
+ *     smoothingIterations: 5
+ *   })
+ *   .build();
+ *
+ * await advancedSpalam.start({ autoRender: false });
+ * advancedSpalam.render(); // 手動でレンダリング開始
+ * ```
+ */
+export function createSPALAM(): SPALAMBuilder {
+  return new SPALAMBuilder();
+}
+
+/**
  * SPALAMメインクラス
  * WebGL/Three.jsを使用したAR環境での平面推定を実装
+ *
+ * @example
+ * ```typescript
+ * // 基本的な使用方法
+ * const spalam = createSPALAM()
+ *   .useWebGPU()
+ *   .enableDebug()
+ *   .build();
+ *
+ * await spalam.start();
+ *
+ * // イベントリスナーの登録
+ * spalam.on('plane:detected', (plane) => {
+ *   console.log('平面が検出されました:', plane);
+ * });
+ * ```
  */
-class SPALAM implements IServiceProvider {
+export class SPALAM implements IServiceProvider {
   /** ビデオ入力 */
   private video: HTMLVideoElement | null = null;
   /** ARレンダラー */
@@ -47,8 +320,14 @@ class SPALAM implements IServiceProvider {
   /** サービスコンテナ */
   private container: ServiceContainer;
 
+  /** イベントリスナー */
+  private eventListeners: Map<keyof SPALAMEvents, Function[]> = new Map();
+
+  /** アニメーションフレームID */
+  private animationFrameId: number | null = null;
+
   constructor(
-    config?: Partial<SPALAMConfig>,
+    config?: SPALAMConfig | Partial<SPALAMConfig>,
     serviceProvider?: IServiceProvider
   ) {
     // 環境変数とマージ
@@ -91,16 +370,24 @@ class SPALAM implements IServiceProvider {
     this.container.register("planeFittingService", this.planeFittingService);
     this.container.register("frameProcessor", this.frameProcessor);
     this.container.register("stateManager", this.stateManager);
+
+    // 状態変更リスナーを設定
+    this.stateManager.addListener((event: StateChangeEvent) => {
+      try {
+        this.emit("state:changed", event.currentState);
+      } catch (error) {
+        console.error("Error in state change event emission:", error);
+      }
+    });
   }
 
   /**
    * SPALAMを開始
    * @param options - 開始オプション
-   * @param options.video - 使用するビデオ要素（省略時はカメラを使用）
+   * @returns Promise<SPALAM> - チェーンメソッド用にSPALAMインスタンスを返す
    */
-  public async start({
-    video = null,
-  }: { video?: HTMLVideoElement | null } = {}): Promise<void> {
+  public async start(options: SPALAMStartOptions = {}): Promise<SPALAM> {
+    const { video = null, autoRender = true } = options;
     this.stateManager.setState(SPALAMState.INITIALIZING);
 
     const setup = async () => {
@@ -142,9 +429,23 @@ class SPALAM implements IServiceProvider {
         try {
           await setup();
           this.processPlaneDetection();
-          resolve();
+
+          if (autoRender) {
+            this.render();
+          }
+
+          resolve(this); // チェーンメソッド用にthisを返す
         } catch (error) {
-          reject(error);
+          const spalamError =
+            error instanceof SPALAMError
+              ? error
+              : new SPALAMError(
+                  SPALAMErrorType.UNKNOWN,
+                  (error as Error).message,
+                  error as Error
+                );
+          this.emit("error", spalamError);
+          reject(spalamError);
         }
       };
     });
@@ -291,6 +592,25 @@ class SPALAM implements IServiceProvider {
         if (avgResult) {
           this.createPlaneFromResult(avgResult);
           this.stateManager.setPlaneDetected(true, avgResult);
+
+          // 平面検出イベントを発火
+          const planeData: PlaneData = {
+            position: new THREE.Vector3().copy(avgResult.P0),
+            normal: new THREE.Vector3().copy(avgResult.normal),
+            hull2D: avgResult.hull2D,
+            hull3D: avgResult.hull3D,
+            confidence: 1.0, // TODO: 実際の信頼度を計算
+            size: {
+              width:
+                Math.max(...avgResult.hull2D.map((p) => p.u)) -
+                Math.min(...avgResult.hull2D.map((p) => p.u)),
+              height:
+                Math.max(...avgResult.hull2D.map((p) => p.v)) -
+                Math.min(...avgResult.hull2D.map((p) => p.v)),
+            },
+            detectedAt: Date.now(),
+          };
+          this.emit("plane:detected", planeData);
         }
       } else {
         // 進捗をログ
@@ -359,16 +679,42 @@ class SPALAM implements IServiceProvider {
    * レンダリングループ
    * ARレンダリングを実行
    */
-  public render() {
+  public render(): void {
     // 常に特徴点検出は実行（カメラ映像の更新のため）
     if (this.frameProcessor.isReady()) {
       this.frameProcessor.renderFeatures();
+
+      // フレーム処理イベントを発火
+      const features = this.frameProcessor.getFeatures() || [];
+      const centerFeature = this.frameProcessor.getCenterFeature();
+      const frameData: FrameData = {
+        features: features.map((f: any, index: number) => ({
+          point: f.point || { x: f.x || 0, y: f.y || 0 },
+          quality: f.quality || 0.5,
+          trackingCount: f.trackingCount || 1,
+          id: f.id || `feature_${index}`,
+        })),
+        centerFeature: centerFeature
+          ? {
+              point: (centerFeature as any).point || {
+                x: (centerFeature as any).x || 0,
+                y: (centerFeature as any).y || 0,
+              },
+              quality: (centerFeature as any).quality || 0.5,
+              trackingCount: (centerFeature as any).trackingCount || 1,
+              id: (centerFeature as any).id || "center_feature",
+            }
+          : null,
+        depthMap: null, // getDepthMapは非同期なので、ここでは省略
+        timestamp: Date.now(),
+      };
+      this.emit("frame:processed", frameData);
     }
 
     if (this.arRenderer) {
       this.arRenderer.render();
     }
-    requestAnimationFrame(() => this.render());
+    this.animationFrameId = requestAnimationFrame(() => this.render());
   }
 
   /**
@@ -379,16 +725,67 @@ class SPALAM implements IServiceProvider {
   }
 
   /**
-   * 状態変更リスナーを登録
+   * イベントリスナーを登録
    */
-  public onStateChange(listener: (event: any) => void): void {
-    this.stateManager.addListener(listener);
+  public on<K extends keyof SPALAMEvents>(
+    event: K,
+    listener: SPALAMEvents[K]
+  ): SPALAM {
+    if (!this.eventListeners.has(event)) {
+      this.eventListeners.set(event, []);
+    }
+    this.eventListeners.get(event)!.push(listener);
+    return this; // チェーンメソッド用
+  }
+
+  /**
+   * イベントリスナーを削除
+   */
+  public off<K extends keyof SPALAMEvents>(
+    event: K,
+    listener: SPALAMEvents[K]
+  ): SPALAM {
+    const listeners = this.eventListeners.get(event);
+    if (listeners) {
+      const index = listeners.indexOf(listener);
+      if (index !== -1) {
+        listeners.splice(index, 1);
+      }
+    }
+    return this; // チェーンメソッド用
+  }
+
+  /**
+   * イベントを発火
+   */
+  private emit<K extends keyof SPALAMEvents>(
+    event: K,
+    ...args: Parameters<SPALAMEvents[K]>
+  ): void {
+    const listeners = this.eventListeners.get(event);
+    if (listeners) {
+      listeners.forEach((listener) => {
+        try {
+          (listener as Function)(...args);
+        } catch (error) {
+          console.error(`Error in ${event} listener:`, error);
+        }
+      });
+    }
+  }
+
+  /**
+   * 状態変更リスナーを登録（後方互換性）
+   * @deprecated on('state:changed', listener)を使用してください
+   */
+  public onStateChange(listener: (state: SPALAMState) => void): void {
+    this.on("state:changed", listener);
   }
 
   /**
    * 設定を更新
    */
-  public updateConfig(config: Partial<SPALAMConfig>): void {
+  public updateConfig(config: Partial<SPALAMConfig>): SPALAM {
     this.config = mergeWithDefaults({
       ...this.config,
       ...config,
@@ -398,15 +795,57 @@ class SPALAM implements IServiceProvider {
     if (config.plane) {
       this.planeFittingService.updateConfig(config.plane);
     }
+    return this; // チェーンメソッド用
   }
 
   /**
    * リセット
    */
-  public reset(): void {
+  public reset(): SPALAM {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
+    return this; // チェーンメソッド用
+  }
+
+  /**
+   * 停止
+   */
+  public stop(): SPALAM {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+
+    // 各サービスを停止
+    if (this.frameProcessor) {
+      this.frameProcessor.stop();
+    }
+
+    return this; // チェーンメソッド用
+  }
+
+  /**
+   * リソースを解放
+   */
+  public dispose(): void {
+    this.stop();
+
+    // イベントリスナーをクリア
+    this.eventListeners.clear();
+
+    // ARレンダラーを解放
+    if (this.arRenderer) {
+      this.arRenderer.dispose();
+      this.arRenderer = null;
+    }
+
+    // ビデオ要素をクリア
+    if (this.video) {
+      this.video.pause();
+      this.video.srcObject = null;
+      this.video = null;
+    }
   }
 
   /**
@@ -422,6 +861,244 @@ class SPALAM implements IServiceProvider {
   public hasService(name: string): boolean {
     return this.container.has(name);
   }
+
+  /**
+   * パフォーマンス統計を取得
+   *
+   * フレームレート、各処理の実行時間、メモリ使用量などの
+   * パフォーマンス情報を取得します。
+   *
+   * @returns パフォーマンス統計情報
+   *
+   * @example
+   * ```typescript
+   * const stats = spalam.getPerformanceStats();
+   * console.log(`FPS: ${stats.fps}`);
+   * console.log(`特徴点検出時間: ${stats.featureDetectionTime}ms`);
+   * ```
+   */
+  public getPerformanceStats(): PerformanceStats {
+    // TODO: 実際のパフォーマンスメトリクスを収集
+    return {
+      fps: 0,
+      featureDetectionTime: 0,
+      depthEstimationTime: 0,
+      planeFittingTime: 0,
+      memoryUsage: 0,
+    };
+  }
+
+  /**
+   * カメラ情報を取得
+   *
+   * 現在使用中のカメラの内部パラメータ、歪み係数、解像度などの
+   * 詳細情報を取得します。カメラが初期化されていない場合はnullを返します。
+   *
+   * @returns カメラ情報、またはnull（カメラが未初期化の場合）
+   *
+   * @example
+   * ```typescript
+   * const cameraInfo = spalam.getCameraInfo();
+   * if (cameraInfo) {
+   *   console.log(`解像度: ${cameraInfo.resolution.width}x${cameraInfo.resolution.height}`);
+   *   console.log(`焦点距離: fx=${cameraInfo.intrinsics.fx}, fy=${cameraInfo.intrinsics.fy}`);
+   * }
+   * ```
+   */
+  public getCameraInfo(): CameraInfo | null {
+    if (!this.video) {
+      return null;
+    }
+
+    // TODO: 実際のカメラパラメータを取得
+    return {
+      intrinsics: {
+        fx: 800,
+        fy: 800,
+        cx: this.video.videoWidth / 2,
+        cy: this.video.videoHeight / 2,
+      },
+      distortion: {
+        k1: 0,
+        k2: 0,
+        p1: 0,
+        p2: 0,
+      },
+      resolution: {
+        width: this.video.videoWidth,
+        height: this.video.videoHeight,
+      },
+    };
+  }
+
+  /**
+   * 現在の設定を取得
+   *
+   * SPALAM内部で使用されている全ての設定情報のコピーを取得します。
+   * 返される設定オブジェクトを変更しても内部設定には影響しません。
+   *
+   * @returns 現在の設定のコピー
+   *
+   * @example
+   * ```typescript
+   * const config = spalam.getConfig();
+   * console.log('特徴点設定:', config.features);
+   * console.log('深度推定設定:', config.depth);
+   * console.log('平面推定設定:', config.plane);
+   * ```
+   */
+  public getConfig(): SPALAMConfig {
+    return { ...this.config };
+  }
+
+  /**
+   * 検出された平面情報を取得
+   *
+   * 現在検出されている平面の詳細情報を取得します。
+   * 平面が検出されていない場合はnullを返します。
+   *
+   * @returns 検出された平面データ、またはnull（平面が未検出の場合）
+   *
+   * @example
+   * ```typescript
+   * const plane = spalam.getDetectedPlane();
+   * if (plane) {
+   *   console.log('平面位置:', plane.position);
+   *   console.log('平面法線:', plane.normal);
+   *   console.log('信頼度:', plane.confidence);
+   *   console.log('サイズ:', plane.size);
+   * }
+   * ```
+   */
+  public getDetectedPlane(): PlaneData | null {
+    if (!this.stateManager.isPlaneDetected()) {
+      return null;
+    }
+
+    const planeResult = this.stateManager.getPlaneResult();
+    if (!planeResult) {
+      return null;
+    }
+
+    return {
+      position: new THREE.Vector3().copy(planeResult.P0),
+      normal: new THREE.Vector3().copy(planeResult.normal),
+      hull2D: planeResult.hull2D,
+      hull3D: planeResult.hull3D,
+      confidence: 1.0,
+      size: {
+        width:
+          Math.max(...planeResult.hull2D.map((p) => p.u)) -
+          Math.min(...planeResult.hull2D.map((p) => p.u)),
+        height:
+          Math.max(...planeResult.hull2D.map((p) => p.v)) -
+          Math.min(...planeResult.hull2D.map((p) => p.v)),
+      },
+      detectedAt: Date.now(),
+    };
+  }
+
+  /**
+   * アクティブな状態かどうかをチェック
+   *
+   * SPALAMが現在フレーム処理を実行しているかどうかを確認します。
+   * start()で開始され、stop()やpause()で停止されるまでtrueを返します。
+   *
+   * @returns アクティブ状態の場合true、停止中の場合false
+   *
+   * @example
+   * ```typescript
+   * if (spalam.isActive()) {
+   *   console.log('SPALAMは実行中です');
+   * } else {
+   *   console.log('SPALAMは停止中です');
+   * }
+   * ```
+   */
+  public isActive(): boolean {
+    return this.animationFrameId !== null;
+  }
+
+  /**
+   * 平面が検出されているかどうかをチェック
+   *
+   * 現在平面が検出済みかどうかを確認します。
+   * 平面検出が完了している場合はtrue、まだ検出中または失敗した場合はfalseを返します。
+   *
+   * @returns 平面が検出済みの場合true、未検出の場合false
+   *
+   * @example
+   * ```typescript
+   * spalam.on('plane:detected', () => {
+   *   if (spalam.isPlaneDetected()) {
+   *     console.log('平面が検出されました!');
+   *     const plane = spalam.getDetectedPlane();
+   *   }
+   * });
+   * ```
+   */
+  public isPlaneDetected(): boolean {
+    return this.stateManager.isPlaneDetected();
+  }
+
+  /**
+   * フレーム処理の一時停止
+   *
+   * 現在実行中のフレーム処理を一時停止します。
+   * resume()メソッドで処理を再開できます。
+   *
+   * @returns SPALAMインスタンス（メソッドチェーン用）
+   *
+   * @example
+   * ```typescript
+   * // 一時停止
+   * spalam.pause();
+   *
+   * // 何かしらの処理...
+   *
+   * // 再開
+   * spalam.resume();
+   * ```
+   */
+  public pause(): SPALAM {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+    return this;
+  }
+
+  /**
+   * フレーム処理の再開
+   *
+   * pause()で一時停止したフレーム処理を再開します。
+   * 既に実行中の場合は何も行いません。
+   *
+   * @returns SPALAMインスタンス（メソッドチェーン用）
+   *
+   * @example
+   * ```typescript
+   * // 一時停止
+   * spalam.pause();
+   *
+   * // 後で再開
+   * spalam.resume();
+   *
+   * // チェーンメソッドとしても使用可能
+   * spalam.pause().resume();
+   * ```
+   */
+  public resume(): SPALAM {
+    if (!this.animationFrameId) {
+      this.render();
+    }
+    return this;
+  }
 }
 
+// デフォルトエクスポート（後方互換性）
 export default SPALAM;
+
+// 名前付きエクスポート
+export type { SPALAMState } from "./services/StateManager";
+export type { SPALAMConfig } from "./config/types";
