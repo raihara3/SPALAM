@@ -1,6 +1,7 @@
 import { SPALAMConfig } from "./types";
 import { FeatureDetectionAlgorithm } from "../types/FeatureDetectionAlgorithm";
 import { DepthEstimationModel, InferenceEngine } from "../types/DepthEstimationModel";
+import { RenderingMode, ShadowMapType } from "../types/RenderingTypes";
 
 /**
  * SPALAMのデフォルト設定
@@ -135,6 +136,85 @@ export const defaultConfig: SPALAMConfig = {
       color: 0x44ff44,
       opacity: 0.5,
     },
+    advanced: {
+      rendering: {
+        mode: RenderingMode.STANDARD,
+        antialias: true,
+        pixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : 1,
+        clearColor: 0x000000,
+        clearAlpha: 0,
+        shadows: {
+          enabled: true,
+          type: ShadowMapType.PCF_SOFT,
+          resolution: 2048
+        },
+        postProcessing: {
+          enabled: false,
+          effects: []
+        },
+        performance: {
+          enableLOD: true,
+          frustumCulling: true,
+          occlusionCulling: false,
+          enableInstancing: true
+        }
+      },
+      lights: {
+        ambient: {
+          enabled: true,
+          color: 0xffffff,
+          intensity: 0.6
+        },
+        directional: {
+          enabled: true,
+          color: 0xffffff,
+          intensity: 0.8,
+          position: { x: 5, y: 5, z: 5 },
+          castShadow: true
+        },
+        points: [],
+        spots: []
+      },
+      camera: {
+        fov: 75,
+        near: 0.1,
+        far: 1000,
+        position: { x: 0, y: 0, z: 3 },
+        lookAt: { x: 0, y: 0, z: 0 },
+        controls: {
+          enableOrbit: false,
+          enablePan: false,
+          enableZoom: false,
+          autoRotate: false,
+          autoRotateSpeed: 2,
+          enableDamping: true,
+          dampingFactor: 0.05
+        }
+      },
+      animation: {
+        enabled: true,
+        default: {
+          rotation: {
+            enabled: false,
+            speed: { x: 0, y: 0.01, z: 0 }
+          },
+          float: {
+            enabled: false,
+            amplitude: 0.1,
+            frequency: 1
+          },
+          pulse: {
+            enabled: false,
+            minScale: 0.9,
+            maxScale: 1.1,
+            speed: 2
+          }
+        },
+        custom: []
+      },
+      enableInteraction: false,
+      enablePerformanceMonitor: false
+    }
   },
 };
 
@@ -200,6 +280,7 @@ export function mergeWithDefaults(
         ...defaultConfig.renderer.hullMesh,
         ...(config.renderer?.hullMesh || {}),
       },
+      advanced: config.renderer?.advanced || defaultConfig.renderer.advanced,
     },
   };
 }

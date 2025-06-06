@@ -17,6 +17,13 @@ import {
   DepthPipelineConfig
 } from "../types/DepthEstimationModel";
 
+import {
+  RenderingConfig,
+  LightConfig,
+  CameraConfig,
+  AnimationConfig
+} from "../types/RenderingTypes";
+
 /**
  * 特徴点検出の設定
  */
@@ -148,6 +155,21 @@ export interface ARRendererConfig {
     color: number;
     /** 不透明度 */
     opacity: number;
+  };
+  /** 拡張レンダリング設定 */
+  advanced?: {
+    /** レンダリング設定 */
+    rendering?: RenderingConfig;
+    /** ライト設定 */
+    lights?: LightConfig;
+    /** カメラ設定 */
+    camera?: CameraConfig;
+    /** アニメーション設定 */
+    animation?: AnimationConfig;
+    /** インタラクション有効化 */
+    enableInteraction?: boolean;
+    /** パフォーマンスモニタリング */
+    enablePerformanceMonitor?: boolean;
   };
 }
 
