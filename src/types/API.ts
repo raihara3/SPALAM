@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Point2D, Point3D } from "./Point";
 import { SPALAMConfig } from "../config/types";
+import { StateChangeEvent } from "../services/StateManager";
 
 /**
  * SPALAMイベント型定義
@@ -11,7 +12,7 @@ export interface SPALAMEvents {
   /** 平面検出完了時に発火 */
   "plane:detected": (plane: PlaneData) => void;
   /** 状態変更時に発火 */
-  "state:changed": (state: string) => void;
+  "state:changed": (event: StateChangeEvent) => void;
   /** エラー発生時に発火 */
   error: (error: Error) => void;
 }

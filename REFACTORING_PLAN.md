@@ -93,9 +93,9 @@ SPALAM のリファクタリング計画。現状の課題を整理し、段階�
 
 #### 4.2 モジュール対応
 
-- [ ] ESModule と CommonJS 両対応
-- [ ] Tree-shaking 対応
-- [ ] バンドルサイズ最適化
+- [x] ESModule と CommonJS 両対応
+- [x] Tree-shaking 対応
+- [x] バンドルサイズ最適化
 
 #### 4.3 公開準備
 

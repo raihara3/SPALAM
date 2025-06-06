@@ -374,7 +374,7 @@ export class SPALAM implements IServiceProvider {
     // 状態変更リスナーを設定
     this.stateManager.addListener((event: StateChangeEvent) => {
       try {
-        this.emit("state:changed", event.currentState);
+        this.emit("state:changed", event);
       } catch (error) {
         console.error("Error in state change event emission:", error);
       }
@@ -778,7 +778,7 @@ export class SPALAM implements IServiceProvider {
    * 状態変更リスナーを登録（後方互換性）
    * @deprecated on('state:changed', listener)を使用してください
    */
-  public onStateChange(listener: (state: SPALAMState) => void): void {
+  public onStateChange(listener: (event: StateChangeEvent) => void): void {
     this.on("state:changed", listener);
   }
 
