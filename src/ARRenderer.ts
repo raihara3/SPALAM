@@ -54,11 +54,7 @@ export class ARRenderer {
     this.camera.position.z = 3;
 
     // ウィンドウサイズ変更時のイベントリスナー
-    window.addEventListener("resize", () => {
-      this.camera.aspect = this.width / this.height;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(this.width, this.height);
-    });
+    window.addEventListener("resize", this.resizeHandler);
   }
 
   getScene(): THREE.Scene {
@@ -76,4 +72,38 @@ export class ARRenderer {
   render() {
     this.renderer.render(this.scene, this.camera);
   }
+
+  /**
+   * リソースを解放
+   */
+  dispose(): void {
+    // シーン内のメッシュやマテリアルを解放
+    this.scene.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (Array.isArray(child.material)) {
+          child.material.forEach((material) => material.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
+
+    // レンダラーを解放
+    this.renderer.dispose();
+
+    // canvasをDOMから削除
+    if (this.threeCanvas.parentNode) {
+      this.threeCanvas.parentNode.removeChild(this.threeCanvas);
+    }
+
+    // イベントリスナーを削除
+    window.removeEventListener("resize", this.resizeHandler);
+  }
+
+  private resizeHandler = () => {
+    this.camera.aspect = this.width / this.height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(this.width, this.height);
+  };
 }

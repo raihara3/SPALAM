@@ -3,4 +3,12 @@ export interface Feature {
   y: number;
   trackingCount: number; // 追跡されているフレーム数
   id: string;
+  /** 特徴点のスコア（信頼度） */
+  score?: number;
+  /** 特徴点の向き（度単位） */
+  angle?: number;
+  /** オクターブレベル */
+  octave?: number;
+  /** 特徴点のサイズ */
+  size?: number;
 }

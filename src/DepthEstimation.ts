@@ -40,8 +40,8 @@ export class DepthEstimation {
     const model_id = "onnx-community/depth-anything-v2-small";
     try {
       const hasFp16 = async () => {
-        const adapter = await navigator.gpu.requestAdapter();
-        return adapter.features.has("shader-f16");
+        const adapter = await (navigator as any).gpu?.requestAdapter();
+        return adapter?.features.has("shader-f16") ?? false;
       };
       this.model = await AutoModel.from_pretrained(model_id, {
         device: "webgpu",
@@ -78,7 +78,7 @@ export class DepthEstimation {
     const inputs = await this.processor(image);
     const { predicted_depth } = await this.model(inputs);
     this.depthMap = predicted_depth.data;
-    const [bs, oh, ow] = predicted_depth.dims;
+    const [_bs, oh, ow] = predicted_depth.dims;
 
     if (!this.depthMap) return;
 
