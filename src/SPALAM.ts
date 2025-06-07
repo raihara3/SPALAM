@@ -580,6 +580,10 @@ export class SPALAM implements IServiceProvider {
     // 3) ワールド空間の位置をセット
     group.position.copy(useCenter ? centerWS : planeCenterWS);
 
+    // x座標を0に固定
+    group.position.x = 0;
+    group.position.y = 0;
+
     // 4) 各基底ベクトルもワールド空間に変換
     const worldU = uVecCS
       .clone()
