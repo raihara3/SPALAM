@@ -66,12 +66,12 @@ export class FeatureDetector {
     const W = this.canvas.width;
     const H = this.canvas.height;
 
-    // 2) マスクを作成（中央50%×50%だけ検出許可）
+    // 2) マスクを作成（中央40%×40%だけ検出許可）
     const mask = new this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
-    const roiX = Math.floor(W * 0.25);
-    const roiY = Math.floor(H * 0.25);
-    const roiW = Math.floor(W * 0.5);
-    const roiH = Math.floor(H * 0.5);
+    const roiX = Math.floor(W * 0.3);
+    const roiY = Math.floor(H * 0.3);
+    const roiW = Math.floor(W * 0.4);
+    const roiH = Math.floor(H * 0.4);
     mask
       .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
       .setTo(new this.cv.Scalar(255));
@@ -156,7 +156,7 @@ export class FeatureDetector {
       status.delete();
 
       // 6) 追跡点が少なければ追加検出
-      if (trackedFeatures.length < this.maxCorners * 0.5) {
+      if (trackedFeatures.length < this.maxCorners * 0.3) {
         const points = new this.cv.Mat();
         this.cv.goodFeaturesToTrack(
           gray,

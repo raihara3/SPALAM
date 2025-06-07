@@ -1,22 +1,100 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
     <title>SPALAM</title>
     <style>
       body {
         margin: 0;
         padding: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        overflow: hidden;
+        background: #000;
       }
       canvas {
         height: 100svh !important;
         width: 100vw !important;
         object-fit: cover;
       }
+
+      /* ローディング表示 */
+      #loading {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        text-align: center;
+        z-index: 1000;
+      }
+
+      .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 2s linear infinite;
+        margin: 0 auto 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* モバイル向けの最適化 */
+      @media (max-width: 768px) {
+        body {
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
+          -webkit-tap-highlight-color: transparent;
+        }
+      }
     </style>
   </head>
   <body>
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>SPALAM を初期化中...</p>
+      <p id="loading-detail"><small>カメラの使用を許可してください</small></p>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
+
+    <script>
+      // ローディング表示を制御
+      window.addEventListener("load", () => {
+        // SPALAM初期化完了後にローディングを非表示
+        const checkSPALAMReady = () => {
+          // SPALAMの初期化状態をチェック（このロジックは後で調整）
+          setTimeout(() => {
+            const loading = document.getElementById("loading");
+            if (loading) {
+              loading.style.display = "none";
+            }
+          }, 3000); // 暫定的に3秒後に非表示
+        };
+        checkSPALAMReady();
+      });
+
+      // モバイルデバイスでのタッチ操作を最適化
+      document.addEventListener(
+        "touchstart",
+        function (e) {
+          // パフォーマンス向上のため、不要なタッチイベントを制御
+        },
+        { passive: true }
+      );
+    </script>
   </body>
 </html>

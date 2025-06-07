@@ -40,13 +40,51 @@ export class FrameProcessor {
     });
 
     // 深度推定の初期化
-    this.depthEstimation = new DepthEstimation({
-      canvas: this.featureDetector.canvas,
-      context: this.featureDetector.ctx,
-      showDepth,
-    });
+    try {
+      this.depthEstimation = new DepthEstimation({
+        canvas: this.featureDetector.canvas,
+        context: this.featureDetector.ctx,
+        showDepth,
+      });
 
-    await this.depthEstimation.loadModel();
+      console.log("Loading depth estimation model...");
+      await this.depthEstimation.loadModel();
+      console.log("Depth estimation model loaded successfully");
+    } catch (error) {
+      // 深度推定が失敗してもSPALAMは継続（特徴点検出は利用可能）
+      this.depthEstimation = null;
+
+      // エラータイプ別の処理
+      if (
+        error.message &&
+        (error.message.includes("not supported on mobile devices") ||
+          error.message.includes("WASM depth estimation failed") ||
+          error.message.includes("Model download failed") ||
+          error.message.includes("CDN returned HTML"))
+      ) {
+        // モバイルやネットワーク問題の場合は警告レベルで出力
+        console.warn(
+          "Depth estimation disabled, using fallback depth calculation:",
+          error.message
+        );
+        // エラーを再スローしない
+      } else if (error.message && error.message.includes("timeout")) {
+        console.warn(
+          "Model loading timeout - using fallback depth calculation:",
+          error.message
+        );
+        // タイムアウトの場合も継続
+      } else {
+        // その他の予期しないエラーの場合のみエラーレベルで出力
+        console.error("Depth estimation failed to initialize:", error);
+        console.warn(
+          "SPALAM will continue without AI depth estimation, using fallback depth calculation"
+        );
+        // その他の予期しないエラーの場合は再スロー
+        throw new Error(`Depth estimation unavailable: ${error.message}`);
+      }
+    }
+
     this.isInitialized = true;
   }
 
@@ -61,7 +99,7 @@ export class FrameProcessor {
    * フレームを処理
    */
   public async processFrame(): Promise<FrameProcessingResult | null> {
-    if (!this.isInitialized || !this.featureDetector || !this.depthEstimation) {
+    if (!this.isInitialized || !this.featureDetector) {
       console.error("FrameProcessor is not initialized");
       return null;
     }
@@ -73,8 +111,16 @@ export class FrameProcessor {
     const features = this.featureDetector.getTrackedFeaturePoints();
     const centerFeature = this.featureDetector.centerFeature;
 
-    // 深度マップを取得（非同期で取得しても、次のフレームで使用）
-    const depthMap = await this.depthEstimation.getDepthMap();
+    // 深度マップを取得（深度推定が利用可能な場合のみ）
+    let depthMap = null;
+    if (this.depthEstimation) {
+      try {
+        depthMap = await this.depthEstimation.getDepthMap();
+      } catch (error) {
+        console.warn("Depth map generation failed:", error);
+        // 深度推定エラーでもフレーム処理は継続
+      }
+    }
 
     return {
       features,

@@ -25,7 +25,11 @@ import {
   PlaneFittingResult,
 } from "./services/PlaneFittingService";
 import { FrameProcessor } from "./services/FrameProcessor";
-import { StateManager, SPALAMState, StateChangeEvent } from "./services/StateManager";
+import {
+  StateManager,
+  SPALAMState,
+  StateChangeEvent,
+} from "./services/StateManager";
 
 // utils
 import { CameraController } from "./utils/CameraController";
@@ -424,9 +428,23 @@ export class SPALAM implements IServiceProvider {
     };
 
     return new Promise((resolve, reject) => {
-      cv.onRuntimeInitialized = async () => {
-        console.log(cv.getBuildInformation());
+      // OpenCV.jsが既に読み込み済みかチェック
+      const checkOpenCVReady = () => {
         try {
+          // OpenCV.jsが利用可能かテスト
+          if (typeof cv !== "undefined" && cv.getBuildInformation) {
+            cv.getBuildInformation();
+            return true;
+          }
+          return false;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const initializeApp = async () => {
+        try {
+          console.log("OpenCV.js initialized:", cv.getBuildInformation());
           await setup();
           this.processPlaneDetection();
 
@@ -434,7 +452,7 @@ export class SPALAM implements IServiceProvider {
             this.render();
           }
 
-          resolve(this); // チェーンメソッド用にthisを返す
+          resolve(this);
         } catch (error) {
           const spalamError =
             error instanceof SPALAMError
@@ -448,6 +466,39 @@ export class SPALAM implements IServiceProvider {
           reject(spalamError);
         }
       };
+
+      // 既に読み込み済みの場合はすぐに実行
+      if (checkOpenCVReady()) {
+        initializeApp();
+        return;
+      }
+
+      // OpenCV.jsの読み込み完了を待機
+      let timeoutId: NodeJS.Timeout;
+      const timeout = setTimeout(() => {
+        reject(
+          new SPALAMError(
+            SPALAMErrorType.INITIALIZATION_ERROR,
+            "OpenCV.js loading timeout"
+          )
+        );
+      }, 10000); // 10秒でタイムアウト
+
+      cv.onRuntimeInitialized = () => {
+        clearTimeout(timeout);
+        initializeApp();
+      };
+
+      // エラーハンドリング用のfallback
+      if (typeof cv === "undefined") {
+        clearTimeout(timeout);
+        reject(
+          new SPALAMError(
+            SPALAMErrorType.INITIALIZATION_ERROR,
+            "OpenCV.js is not available"
+          )
+        );
+      }
     });
   }
 
@@ -570,8 +621,15 @@ export class SPALAM implements IServiceProvider {
     const processInterval = setInterval(async () => {
       // フレーム処理
       const frameResult = await this.frameProcessor.processFrame();
-      if (!frameResult || !frameResult.centerFeature || !frameResult.depthMap) {
+      if (!frameResult || !frameResult.centerFeature) {
         return;
+      }
+
+      // 深度マップが利用できない場合の警告（モバイル端末など）
+      if (!frameResult.depthMap) {
+        console.log(
+          "Processing frame without AI depth estimation - using fallback depth calculation"
+        );
       }
 
       // 平面フィッティングを実行

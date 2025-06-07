@@ -60,11 +60,38 @@ function sampleDepthAtFeaturePoints({
   mapHeight,
 }: {
   featurePoints: Feature[];
-  depthMap: Float32Array<ArrayBufferLike>;
+  depthMap: Float32Array<ArrayBufferLike> | null;
   mapWidth: number;
   mapHeight: number;
 }): Array<{ x: number; y: number; z: number; id: string }> {
   const points3D = [];
+
+  // 深度マップが利用できない場合のフォールバック
+  if (!depthMap) {
+    console.warn("Depth map not available, using fallback depth estimation");
+    for (const point of featurePoints) {
+      // 画面中央からの距離に基づく簡易深度推定
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+      const distanceFromCenter = Math.sqrt(
+        Math.pow(point.x - centerX, 2) + Math.pow(point.y - centerY, 2)
+      );
+
+      // 距離に基づく簡易深度値の改善版
+      // より現実的な深度分布を作成（中央が近く、周辺が遠い）
+      const normalizedDistance =
+        distanceFromCenter / Math.max(centerX, centerY);
+      const fallbackDepth = 1.5 + Math.pow(normalizedDistance, 1.5) * 1.5; // 1.5-3.0の範囲
+
+      points3D.push({
+        x: point.x,
+        y: point.y,
+        z: fallbackDepth,
+        id: point.id,
+      });
+    }
+    return points3D;
+  }
 
   for (const point of featurePoints) {
     // 特徴点の座標を深度マップのサイズに合わせてスケーリング

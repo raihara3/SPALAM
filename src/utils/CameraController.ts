@@ -6,24 +6,63 @@ export class CameraController {
   }
 
   async initCamera(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "environment",
-      },
-    });
+    try {
+      console.log("Requesting camera access...");
 
-    this.video.srcObject = stream;
+      // カメラアクセス許可をリクエスト
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+        },
+      });
 
-    await new Promise<void>((resolve) => {
-      this.video.onloadedmetadata = () => {
-        this.video.width = this.video.videoWidth;
-        this.video.height = this.video.videoHeight;
-        resolve();
-      };
-    });
+      console.log("Camera access granted, setting up video element...");
+      this.video.srcObject = stream;
 
-    await this.video.play();
-    document.body.appendChild(this.video);
+      // メタデータの読み込み完了を待機
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Video metadata loading timeout"));
+        }, 5000);
+
+        this.video.onloadedmetadata = () => {
+          clearTimeout(timeout);
+          this.video.width = this.video.videoWidth;
+          this.video.height = this.video.videoHeight;
+          console.log(
+            `Video resolution: ${this.video.width}x${this.video.height}`
+          );
+          resolve();
+        };
+
+        this.video.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error("Video element error"));
+        };
+      });
+
+      // 動画再生開始
+      await this.video.play();
+      document.body.appendChild(this.video);
+
+      console.log("Camera initialized successfully");
+    } catch (error) {
+      console.error("Camera initialization failed:", error);
+
+      if (error.name === "NotAllowedError") {
+        throw new Error(
+          "Camera access denied. Please allow camera permissions and reload the page."
+        );
+      } else if (error.name === "NotFoundError") {
+        throw new Error(
+          "No camera found. Please connect a camera and reload the page."
+        );
+      } else if (error.name === "NotSupportedError") {
+        throw new Error("Camera is not supported on this device.");
+      } else {
+        throw new Error(`Camera initialization failed: ${error.message}`);
+      }
+    }
   }
 
   getVideo(): HTMLVideoElement {
