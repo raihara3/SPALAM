@@ -574,11 +574,11 @@ export class SPALAM implements IServiceProvider {
     // 2) カメラ空間→ワールド空間に変換
     const copyCamera = camera.clone();
     copyCamera.position.z = 0; // カメラの位置を原点に
-    const planeCenterWS = copyCamera.localToWorld(planeCenterCS.clone());
-    const centerWS = copyCamera.localToWorld(centerCS.clone());
 
     // 3) ワールド空間の位置をセット
-    group.position.copy(useCenter ? centerWS : planeCenterWS);
+    // P0は既に中心特徴点の位置なので、それをワールド座標に変換
+    const p0WS = copyCamera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
+    group.position.copy(p0WS);
 
     // x座標を0に固定
     group.position.x = 0;
@@ -709,6 +709,23 @@ export class SPALAM implements IServiceProvider {
 
     // ジオメトリの生成
     const scene = this.arRenderer!.getScene();
+
+    // 既存の平面グループがあれば削除
+    const existingGroup = this.stateManager.getPlaneGroup();
+    if (existingGroup) {
+      scene.remove(existingGroup);
+      existingGroup.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach((mat) => mat.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      });
+    }
+
     const group = new THREE.Group();
     const { planeMesh } = this.createPlaneGeometries(
       hull2D,
@@ -735,6 +752,48 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.setPlaneGroup(group);
     console.log("平面配置完了:", group.position);
     this.arRenderer?.setCameraPosition(0, 0, group.position.z * 2);
+  }
+
+  /**
+   * 平面の位置を中心特徴点に基づいて更新
+   */
+  private updatePlanePosition(centerFeature: Feature): void {
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
+
+    if (!planeGroup || !planeResult) return;
+
+    // 簡易的な深度計算（平面検出時の深度を使用）
+    const estimatedZ = planeResult.P0.z;
+
+    // 特徴点の正規化座標を計算
+    const width = this.frameProcessor.getCanvasWidth();
+    const height = this.frameProcessor.getCanvasHeight();
+    const normalizedX = (centerFeature.x / width - 0.5) * 2;
+    const normalizedY = -(centerFeature.y / height - 0.5) * 2; // Y軸を反転
+
+    // カメラのアスペクト比とFOVを考慮
+    const camera = this.arRenderer!.getCamera();
+    const aspect = camera.aspect;
+    const fov = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fov / 2);
+
+    // 3D位置を計算（カメラ座標系）
+    const x = normalizedX * tanHalfFov * aspect * estimatedZ;
+    const y = normalizedY * tanHalfFov * estimatedZ;
+
+    // カメラ座標系からワールド座標系への変換
+    const copyCamera = camera.clone();
+    copyCamera.position.z = 0;
+
+    const newPositionWS = copyCamera.localToWorld(
+      new THREE.Vector3(x, y, estimatedZ)
+    );
+
+    // 位置の変化が大きすぎる場合はスムージング
+    const smoothingFactor = 0.7; // 0.0-1.0の範囲で、値が小さいほどスムーズ
+
+    planeGroup.position.lerp(newPositionWS, smoothingFactor);
   }
 
   /**
@@ -771,6 +830,11 @@ export class SPALAM implements IServiceProvider {
         timestamp: Date.now(),
       };
       this.emit("frame:processed", frameData);
+
+      // 平面が検出済みで、中心特徴点が存在する場合は位置を更新
+      if (this.stateManager.isPlaneDetected() && centerFeature) {
+        this.updatePlanePosition(centerFeature);
+      }
     }
 
     if (this.arRenderer) {
