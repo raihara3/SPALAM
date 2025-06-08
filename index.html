@@ -69,9 +69,16 @@
       <p id="loading-detail"><small>カメラの使用を許可してください</small></p>
     </div>
 
+    <script async src="https://docs.opencv.org/4.10.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <script type="module" src="/src/main.ts"></script>
 
     <script>
+      // OpenCV読み込み完了のグローバル関数
+      window.onOpenCvReady = function() {
+        console.log('OpenCV.js is ready');
+        window.cvReady = true;
+      };
+
       // ローディング表示を制御
       window.addEventListener("load", () => {
         // SPALAM初期化完了後にローディングを非表示

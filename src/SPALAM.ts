@@ -1,6 +1,6 @@
 // lib
 import * as THREE from "three";
-import cv from "@techstark/opencv-js";
+declare const cv: any;
 
 // types
 import {
@@ -580,32 +580,22 @@ export class SPALAM implements IServiceProvider {
       .add(uVecCS.clone().multiplyScalar(midU))
       .add(vVecCS.clone().multiplyScalar(midV));
 
-    // 2) カメラ空間→ワールド空間に変換
+    // 2) カメラ空間→ワールド空間に変換（カメラ位置はリセットしない）
     const copyCamera = camera.clone();
-    copyCamera.position.z = 0; // カメラの位置を原点に
 
     // 3) ワールド空間の位置をセット
     // P0は既に中心特徴点の位置なので、それをワールド座標に変換
     const p0WS = copyCamera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
     group.position.copy(p0WS);
 
-    // x座標を0に固定
+    // x座標とy座標を0に固定（平面追跡アプローチ）
     group.position.x = 0;
     group.position.y = 0;
 
-    // 4) 各基底ベクトルもワールド空間に変換
-    const worldU = uVecCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
-    const worldV = vVecCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
-    const worldN = normalCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
+    // 4) 平面の基底ベクトルはカメラ座標系のまま使用（カメラの回転に追従させない）
+    const worldU = uVecCS.clone().normalize();
+    const worldV = vVecCS.clone().normalize();
+    const worldN = normalCS.clone().normalize();
 
     // 5) 直交基底から回転行列を作成
     const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
@@ -872,6 +862,7 @@ export class SPALAM implements IServiceProvider {
     console.log(
       `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
     );
+    console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
   }
 
   /**

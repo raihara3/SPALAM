@@ -75,6 +75,22 @@ spalam.on("error", (error) => {
   document.body.appendChild(errorDiv);
 });
 
+// OpenCV読み込み待機
+const waitForOpenCV = (): Promise<void> => {
+  return new Promise((resolve) => {
+    if (typeof cv !== 'undefined' && cv.Mat) {
+      resolve();
+    } else {
+      const checkInterval = setInterval(() => {
+        if (typeof cv !== 'undefined' && cv.Mat) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+    }
+  });
+};
+
 // SPALAMを開始（より詳細なエラーハンドリング）
 const startSPALAM = async () => {
   const hideLoading = () => {
@@ -99,6 +115,10 @@ const startSPALAM = async () => {
       /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
         navigator.userAgent
       );
+    
+    updateLoadingMessage("OpenCV.jsを読み込み中...");
+    await waitForOpenCV();
+    
     if (isMobile) {
       updateLoadingMessage("モバイルデバイス: WASM深度推定を読み込み中...");
     } else {

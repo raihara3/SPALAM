@@ -12,13 +12,11 @@ export default defineConfig({
     rollupOptions: {
       external: [
         '@huggingface/transformers',
-        '@techstark/opencv-js',
         'three'
       ],
       output: {
         globals: {
           '@huggingface/transformers': 'Transformers',
-          '@techstark/opencv-js': 'cv',
           'three': 'THREE'
         }
       }
@@ -27,6 +25,6 @@ export default defineConfig({
     minify: 'terser'
   },
   optimizeDeps: {
-    exclude: ['@techstark/opencv-js']
+    exclude: []
   }
 });
