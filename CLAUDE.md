@@ -2,54 +2,87 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Overview
+
+SPALAM is a TypeScript-based WebAR library for real-time plane detection and tracking using computer vision. It combines OpenCV.js for feature detection, Hugging Face Transformers for depth estimation, and Three.js for AR rendering.
+
 ## Common Development Commands
 
-- `npm run dev` - Start development server with Vite
-- `npm run build` - Build for production (runs TypeScript compiler then Vite build)
-- `npm run preview` - Preview production build
+```bash
+# Development
+npm run dev          # Start Vite dev server on http://localhost:5173
 
-## Project Architecture
+# Building
+npm run build        # Build library + TypeScript declarations
+npm run build:types  # Build only TypeScript declarations
 
-SPALAM is a WebGL-based augmented reality application that implements SLAM (Simultaneous Localization and Mapping) using computer vision techniques. The architecture consists of several interconnected modules:
+# Code Quality
+npm run lint         # Run ESLint checks
+npm run lint:fix     # Fix ESLint issues automatically
+npm run format       # Format code with Prettier
+npm run format:check # Check code formatting
 
-### Core System (SPALAM.ts)
-The main orchestrator that coordinates all subsystems:
-- Manages render loop and frame processing
-- Implements plane fitting with spatial smoothing (3-iteration averaging for stability)
-- Handles feature tracking lifecycle and plane estimation state machine
-- Coordinates between feature detection, depth estimation, and AR rendering
+# Preview production build
+npm run preview
+```
 
-### Feature Detection Pipeline (FeatureDetector.ts)
-- Uses OpenCV.js for Harris corner detection and optical flow tracking
-- Implements center ROI masking (middle 50% of frame) for focused feature detection
-- Tracks feature stability over multiple frames (minimum 5 frames for validity)
-- Maintains center feature selection for plane origin determination
+## Architecture Overview
 
-### Depth Estimation (DepthEstimation.ts)
-- Integrates Hugging Face Transformers with "depth-anything-v2-small" model
-- Uses WebGPU acceleration with fp16/fp32 fallback
-- Processes camera frames to generate depth maps for 3D reconstruction
+### Service-Oriented Architecture
+The codebase uses a service-oriented architecture with dependency injection through `ServiceContainer`. Core services include:
 
-### AR Rendering (ARRenderer.ts)
-- Three.js-based 3D renderer with transparent overlay
-- Manages camera positioning and scene graph
-- Renders detected planes as semi-transparent meshes
+- **StateManager**: Central state management for the application
+- **FrameProcessor**: Main pipeline orchestrating frame processing
+- **FeatureDetectionService**: OpenCV-based feature detection (ORB, SIFT algorithms)
+- **DepthEstimationService**: AI depth estimation using Hugging Face models
+- **PlaneFittingService**: RANSAC-based plane detection from 3D points
+- **RenderingService**: Three.js-based AR rendering
+- **AnimationService**: Frame update loop management
 
-### Helper Functions (helpers/)
-- `fitPlaneRANSAC.ts` - RANSAC-based plane fitting with outlier filtering
-- `weightedPlaneFit2D.ts` - Weighted least squares plane refinement
-- `sampleDepthAtFeaturePoints.ts` - Depth sampling at feature locations
-- `backProjectPoints.ts` - 2D-to-3D point projection using camera intrinsics
-- Convex hull computation and 2D/3D coordinate transformations
+### Processing Pipeline
+1. Camera frame capture
+2. Feature detection (via OpenCV in worker thread)
+3. Depth estimation (via Transformers in worker thread)
+4. 3D point back-projection from features and depth
+5. RANSAC plane fitting on 3D points
+6. AR rendering of detected planes
 
-### Key Technical Details
-- Uses camera intrinsics for accurate 3D reconstruction
-- Implements weighted plane fitting with reprojection error, depth gradient, and tracking stability weights
-- Features spatial smoothing across multiple iterations to reduce noise in plane estimation
-- Maintains feature tracking state across frames for temporal consistency
+### Key Design Patterns
+- **Worker Threads**: Heavy computations (depth estimation, feature detection) run in Web Workers
+- **Modular Exports**: Components can be used individually or through the main SPALAM class
+- **Mobile Fallbacks**: Depth estimation has simplified fallbacks for mobile devices
+- **Configuration System**: Centralized config with environment-specific overrides
 
-### Development Notes
-- All OpenCV matrices must be explicitly deleted to prevent memory leaks
-- WebGPU feature detection determines fp16 vs fp32 precision for depth model
-- Canvas elements are dynamically created and overlaid for multi-layer rendering
-- Type definitions in `src/types/` provide shared interfaces across modules
+## Important Implementation Details
+
+### OpenCV Integration
+- OpenCV.js loaded via CDN (see index.html)
+- Custom TypeScript declarations in `src/opencv.d.ts`
+- Feature detection algorithms: ORB (default) and SIFT
+
+### Depth Estimation Models
+- Default: "Xenova/depth-anything-v2-small"
+- Mobile: Falls back to simplified methods when WebGPU unavailable
+- See `MOBILE_DEPTH_ESTIMATION_RESEARCH.md` for compatibility details
+
+### Plane Detection
+- RANSAC algorithm with configurable iterations and thresholds
+- Convex hull computation for plane boundaries
+- Weighted plane fitting for improved accuracy
+
+### Build Configuration
+- Vite library mode with ES modules and CommonJS output
+- External dependencies: `@huggingface/transformers`, `three`
+- TypeScript strict mode enabled with all checks
+- Source maps included in builds
+
+## Current Development Focus
+
+The project is in active development on the `feature/plane-tracking` branch:
+- Implementing camera motion tracking (see `SPALAM_PLAN.md`)
+- Refactoring for better modularity (see `REFACTORING_PLAN.md`)
+- Mobile performance optimizations
+
+## Testing
+
+Currently no test framework is configured. Jest implementation is planned according to REFACTORING_PLAN.md.
