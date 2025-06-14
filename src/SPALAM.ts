@@ -1,6 +1,6 @@
 // lib
 import * as THREE from "three";
-import cv from "@techstark/opencv-js";
+declare const cv: any;
 
 // types
 import {
@@ -25,7 +25,11 @@ import {
   PlaneFittingResult,
 } from "./services/PlaneFittingService";
 import { FrameProcessor } from "./services/FrameProcessor";
-import { StateManager, SPALAMState, StateChangeEvent } from "./services/StateManager";
+import {
+  StateManager,
+  SPALAMState,
+  StateChangeEvent,
+} from "./services/StateManager";
 
 // utils
 import { CameraController } from "./utils/CameraController";
@@ -326,6 +330,15 @@ export class SPALAM implements IServiceProvider {
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
 
+  /** 前フレームの中心特徴点位置（カメラ移動追跡用） */
+  private previousCenterFeature: { x: number; y: number } | null = null;
+
+  /** 前フレームの特徴点数（Z軸移動検出用） */
+  private previousFeatureCount: number = 0;
+
+  /** 前フレームの特徴点平均距離（Z軸移動検出用） */
+  private previousAverageDistance: number = 0;
+
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
     serviceProvider?: IServiceProvider
@@ -424,9 +437,23 @@ export class SPALAM implements IServiceProvider {
     };
 
     return new Promise((resolve, reject) => {
-      cv.onRuntimeInitialized = async () => {
-        console.log(cv.getBuildInformation());
+      // OpenCV.jsが既に読み込み済みかチェック
+      const checkOpenCVReady = () => {
         try {
+          // OpenCV.jsが利用可能かテスト
+          if (typeof cv !== "undefined" && cv.getBuildInformation) {
+            cv.getBuildInformation();
+            return true;
+          }
+          return false;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const initializeApp = async () => {
+        try {
+          console.log("OpenCV.js initialized:", cv.getBuildInformation());
           await setup();
           this.processPlaneDetection();
 
@@ -434,7 +461,7 @@ export class SPALAM implements IServiceProvider {
             this.render();
           }
 
-          resolve(this); // チェーンメソッド用にthisを返す
+          resolve(this);
         } catch (error) {
           const spalamError =
             error instanceof SPALAMError
@@ -448,6 +475,39 @@ export class SPALAM implements IServiceProvider {
           reject(spalamError);
         }
       };
+
+      // 既に読み込み済みの場合はすぐに実行
+      if (checkOpenCVReady()) {
+        initializeApp();
+        return;
+      }
+
+      // OpenCV.jsの読み込み完了を待機
+      let timeoutId: NodeJS.Timeout;
+      const timeout = setTimeout(() => {
+        reject(
+          new SPALAMError(
+            SPALAMErrorType.INITIALIZATION_ERROR,
+            "OpenCV.js loading timeout"
+          )
+        );
+      }, 10000); // 10秒でタイムアウト
+
+      cv.onRuntimeInitialized = () => {
+        clearTimeout(timeout);
+        initializeApp();
+      };
+
+      // エラーハンドリング用のfallback
+      if (typeof cv === "undefined") {
+        clearTimeout(timeout);
+        reject(
+          new SPALAMError(
+            SPALAMErrorType.INITIALIZATION_ERROR,
+            "OpenCV.js is not available"
+          )
+        );
+      }
     });
   }
 
@@ -520,28 +580,22 @@ export class SPALAM implements IServiceProvider {
       .add(uVecCS.clone().multiplyScalar(midU))
       .add(vVecCS.clone().multiplyScalar(midV));
 
-    // 2) カメラ空間→ワールド空間に変換
+    // 2) カメラ空間→ワールド空間に変換（カメラ位置はリセットしない）
     const copyCamera = camera.clone();
-    copyCamera.position.z = 0; // カメラの位置を原点に
-    const planeCenterWS = copyCamera.localToWorld(planeCenterCS.clone());
-    const centerWS = copyCamera.localToWorld(centerCS.clone());
 
     // 3) ワールド空間の位置をセット
-    group.position.copy(useCenter ? centerWS : planeCenterWS);
+    // P0は既に中心特徴点の位置なので、それをワールド座標に変換
+    const p0WS = copyCamera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
+    group.position.copy(p0WS);
 
-    // 4) 各基底ベクトルもワールド空間に変換
-    const worldU = uVecCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
-    const worldV = vVecCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
-    const worldN = normalCS
-      .clone()
-      .normalize()
-      .applyQuaternion(copyCamera.quaternion);
+    // x座標とy座標を0に固定（平面追跡アプローチ）
+    group.position.x = 0;
+    group.position.y = 0;
+
+    // 4) 平面の基底ベクトルはカメラ座標系のまま使用（カメラの回転に追従させない）
+    const worldU = uVecCS.clone().normalize();
+    const worldV = vVecCS.clone().normalize();
+    const worldN = normalCS.clone().normalize();
 
     // 5) 直交基底から回転行列を作成
     const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
@@ -570,8 +624,15 @@ export class SPALAM implements IServiceProvider {
     const processInterval = setInterval(async () => {
       // フレーム処理
       const frameResult = await this.frameProcessor.processFrame();
-      if (!frameResult || !frameResult.centerFeature || !frameResult.depthMap) {
+      if (!frameResult || !frameResult.centerFeature) {
         return;
+      }
+
+      // 深度マップが利用できない場合の警告（モバイル端末など）
+      if (!frameResult.depthMap) {
+        console.log(
+          "Processing frame without AI depth estimation - using fallback depth calculation"
+        );
       }
 
       // 平面フィッティングを実行
@@ -647,6 +708,23 @@ export class SPALAM implements IServiceProvider {
 
     // ジオメトリの生成
     const scene = this.arRenderer!.getScene();
+
+    // 既存の平面グループがあれば削除
+    const existingGroup = this.stateManager.getPlaneGroup();
+    if (existingGroup) {
+      scene.remove(existingGroup);
+      existingGroup.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach((mat) => mat.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      });
+    }
+
     const group = new THREE.Group();
     const { planeMesh } = this.createPlaneGeometries(
       hull2D,
@@ -672,7 +750,161 @@ export class SPALAM implements IServiceProvider {
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
     console.log("平面配置完了:", group.position);
+    console.log("カメラの位置:", this.arRenderer?.getCamera().position);
     this.arRenderer?.setCameraPosition(0, 0, group.position.z * 2);
+  }
+
+  /**
+   * 特徴点間の平均距離を計算（Z軸移動検出用）
+   */
+  private calculateAverageFeatureDistance(
+    features: any[],
+    centerFeature: Feature
+  ): number {
+    if (features.length < 2) return 0;
+
+    let totalDistance = 0;
+    let count = 0;
+
+    for (const feature of features) {
+      const dx = feature.x - centerFeature.x;
+      const dy = feature.y - centerFeature.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      totalDistance += distance;
+      count++;
+    }
+
+    return count > 0 ? totalDistance / count : 0;
+  }
+
+  /**
+   * カメラの移動を追跡し、Three.jsカメラの位置を更新
+   */
+  private updateCameraPosition(centerFeature: Feature): void {
+    const camera = this.arRenderer!.getCamera();
+    const features = this.frameProcessor.getFeatures() || [];
+
+    // 前フレームの特徴点位置がない場合は初期化
+    if (!this.previousCenterFeature) {
+      this.previousCenterFeature = { x: centerFeature.x, y: centerFeature.y };
+      this.previousFeatureCount = features.length;
+      this.previousAverageDistance = this.calculateAverageFeatureDistance(
+        features,
+        centerFeature
+      );
+      console.log(
+        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
+      );
+      return;
+    }
+
+    // X, Y軸の移動量を計算（逆方向に修正）
+    const deltaX = -(centerFeature.x - this.previousCenterFeature.x);
+    const deltaY = -(centerFeature.y - this.previousCenterFeature.y);
+
+    // Z軸の移動量を特徴点の平均距離変化から推定
+    const currentAverageDistance = this.calculateAverageFeatureDistance(
+      features,
+      centerFeature
+    );
+    let deltaZ = 0;
+
+    if (this.previousAverageDistance > 0 && currentAverageDistance > 0) {
+      // 特徴点間距離の変化率からZ軸移動を推定
+      // 距離が減少 = カメラが遠ざかる（Z軸正方向）
+      // 距離が増加 = カメラが近づく（Z軸負方向）
+      const distanceRatio =
+        currentAverageDistance / this.previousAverageDistance;
+      deltaZ = -(distanceRatio - 1.0) * 2.0; // スケール調整（逆方向に修正）
+    }
+
+    // 移動量がほとんどない場合はスキップ（ノイズ除去）
+    const xyThreshold = 2.0; // ピクセル単位
+    const zThreshold = 0.05; // Z軸の閾値
+
+    const hasXYMovement =
+      Math.abs(deltaX) >= xyThreshold || Math.abs(deltaY) >= xyThreshold;
+    const hasZMovement = Math.abs(deltaZ) >= zThreshold;
+
+    if (!hasXYMovement && !hasZMovement) {
+      console.log(
+        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
+      );
+      return;
+    }
+
+    // 画面サイズで正規化（X, Y軸）
+    const width = this.frameProcessor.getCanvasWidth();
+    const height = this.frameProcessor.getCanvasHeight();
+    const normalizedDeltaX = deltaX / width;
+    const normalizedDeltaY = deltaY / height; // Y軸反転を削除（既に逆方向計算済み）
+
+    // 移動距離をカメラの位置に反映
+    const movementScale = 1.0;
+    const zMovementScale = 0.5; // Z軸の感度調整
+
+    if (hasXYMovement) {
+      camera.position.x += normalizedDeltaX * movementScale;
+      camera.position.y += normalizedDeltaY * movementScale;
+    }
+
+    if (hasZMovement) {
+      camera.position.z += deltaZ * zMovementScale;
+    }
+
+    // 前フレームの値を更新
+    this.previousCenterFeature.x = centerFeature.x;
+    this.previousCenterFeature.y = centerFeature.y;
+    this.previousFeatureCount = features.length;
+    this.previousAverageDistance = currentAverageDistance;
+
+    // 毎フレームカメラ位置をコンソール出力
+    console.log(
+      `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
+    );
+    console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
+  }
+
+  /**
+   * 平面の位置を中心特徴点に基づいて更新
+   */
+  private updatePlanePosition(centerFeature: Feature): void {
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
+
+    if (!planeGroup || !planeResult) return;
+
+    // 簡易的な深度計算（平面検出時の深度を使用）
+    const estimatedZ = planeResult.P0.z;
+
+    // 特徴点の正規化座標を計算
+    const width = this.frameProcessor.getCanvasWidth();
+    const height = this.frameProcessor.getCanvasHeight();
+    const normalizedX = (centerFeature.x / width - 0.5) * 2;
+    const normalizedY = -(centerFeature.y / height - 0.5) * 2; // Y軸を反転
+
+    // カメラのアスペクト比とFOVを考慮
+    const camera = this.arRenderer!.getCamera();
+    const aspect = camera.aspect;
+    const fov = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fov / 2);
+
+    // 3D位置を計算（カメラ座標系）
+    const x = normalizedX * tanHalfFov * aspect * estimatedZ;
+    const y = normalizedY * tanHalfFov * estimatedZ;
+
+    // カメラ座標系からワールド座標系への変換
+    const copyCamera = camera.clone();
+    copyCamera.position.z = 0;
+
+    const newPositionWS = copyCamera.localToWorld(
+      new THREE.Vector3(x, y, estimatedZ)
+    );
+
+    // 位置の変化が大きすぎる場合はスムージング
+    const smoothingFactor = 0.7; // 0.0-1.0の範囲で、値が小さいほどスムーズ
+
+    planeGroup.position.lerp(newPositionWS, smoothingFactor);
   }
 
   /**
@@ -709,6 +941,16 @@ export class SPALAM implements IServiceProvider {
         timestamp: Date.now(),
       };
       this.emit("frame:processed", frameData);
+
+      // 中心特徴点が存在する場合はカメラ位置を更新
+      if (centerFeature) {
+        this.updateCameraPosition(centerFeature);
+      }
+
+      // 平面が検出済みで、中心特徴点が存在する場合は位置を更新
+      if (this.stateManager.isPlaneDetected() && centerFeature) {
+        this.updatePlanePosition(centerFeature);
+      }
     }
 
     if (this.arRenderer) {
@@ -805,6 +1047,9 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
+    this.previousCenterFeature = null; // カメラ移動追跡もリセット
+    this.previousFeatureCount = 0;
+    this.previousAverageDistance = 0;
     return this; // チェーンメソッド用
   }
 

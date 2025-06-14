@@ -40,7 +40,6 @@
   },
   "dependencies": {
     "@huggingface/transformers": "3.0.0",
-    "@techstark/opencv-js": "^4.10.0-release.1",
     "@types/three": "^0.175.0",
     "three": "^0.175.0"
   }

@@ -37,21 +37,205 @@ export class DepthEstimation {
   }
 
   async loadModel() {
+    // モバイルデバイス検出
+    const isMobile =
+      /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent
+      );
+    console.log("Device type:", isMobile ? "Mobile" : "Desktop");
+
+    // モバイルデバイスでは深度推定を無効化（ネットワーク制限により）
+    if (isMobile) {
+      console.warn("Depth estimation disabled on mobile devices due to network restrictions");
+      throw new Error("Depth estimation is not supported on mobile devices. The system will use fallback depth calculation.");
+    }
+
     const model_id = "onnx-community/depth-anything-v2-small";
+
     try {
-      const hasFp16 = async () => {
-        const adapter = await (navigator as any).gpu?.requestAdapter();
-        return adapter?.features.has("shader-f16") ?? false;
+      // CDN接続テスト
+      await this.testHuggingFaceConnection();
+
+      // WebGPU対応チェック
+      const checkWebGPUSupport = async () => {
+        if (!navigator.gpu) {
+          console.log("WebGPU not available: navigator.gpu not found");
+          return false;
+        }
+
+        try {
+          const adapter = await navigator.gpu.requestAdapter();
+          if (!adapter) {
+            console.log("WebGPU not available: no adapter found");
+            return false;
+          }
+
+          const device = await adapter.requestDevice();
+          if (!device) {
+            console.log("WebGPU not available: no device found");
+            return false;
+          }
+
+          device.destroy();
+          console.log("WebGPU available and tested successfully");
+          return true;
+        } catch (error) {
+          console.log("WebGPU test failed:", error.message);
+          return false;
+        }
       };
-      this.model = await AutoModel.from_pretrained(model_id, {
-        device: "webgpu",
-        dtype: (await hasFp16()) ? "fp16" : "fp32",
+
+      const hasWebGPU = await checkWebGPUSupport();
+
+      const hasFp16 = async () => {
+        if (!hasWebGPU) return false;
+        try {
+          const adapter = await navigator.gpu?.requestAdapter();
+          return adapter?.features.has("shader-f16") ?? false;
+        } catch {
+          return false;
+        }
+      };
+
+      // デバイス別設定
+      let deviceConfig: string;
+      let dtypeConfig: string;
+
+      if (isMobile) {
+        // モバイル: WASMのみ、fp32固定
+        deviceConfig = "wasm";
+        dtypeConfig = "fp32";
+        console.log("Mobile device: using WASM backend with fp32");
+      } else {
+        // デスクトップ: WebGPU優先、WASMフォールバック
+        deviceConfig = hasWebGPU ? "webgpu" : "wasm";
+        dtypeConfig = hasWebGPU && (await hasFp16()) ? "fp16" : "fp32";
+        console.log(
+          `Desktop device: using ${deviceConfig} backend with ${dtypeConfig}`
+        );
+      }
+
+      console.log("Model loading config:", {
+        device: deviceConfig,
+        dtype: dtypeConfig,
       });
-      this.processor = await AutoProcessor.from_pretrained(model_id, {});
-      let size = 504;
+
+      // ネットワーク接続チェック
+      if (!navigator.onLine) {
+        throw new Error("No internet connection available for model download");
+      }
+
+      // モバイル向けタイムアウト調整
+      const timeoutDuration = isMobile ? 60000 : 30000; // モバイルでは60秒
+
+      // タイムアウト付きでモデル読み込み
+      const modelLoadPromise = AutoModel.from_pretrained(model_id, {
+        device: deviceConfig,
+        dtype: dtypeConfig,
+        // モバイルでのメモリ制約を考慮
+        ...(isMobile && {
+          cache_dir: false, // キャッシュを無効化してメモリ節約
+        }),
+      });
+
+      const processorLoadPromise = AutoProcessor.from_pretrained(model_id, {
+        ...(isMobile && {
+          cache_dir: false,
+        }),
+      });
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error("Model loading timeout")),
+          timeoutDuration
+        );
+      });
+
+      console.log(`Loading model with ${timeoutDuration / 1000}s timeout...`);
+      [this.model, this.processor] = (await Promise.race([
+        Promise.all([modelLoadPromise, processorLoadPromise]),
+        timeoutPromise,
+      ])) as [any, any];
+
+      // モバイルでは小さいサイズを使用
+      let size = isMobile ? 256 : 504;
       this.processor.feature_extractor.size = { width: size, height: size };
+
+      console.log(
+        `Depth estimation model loaded successfully with size: ${size}x${size}`
+      );
     } catch (err) {
-      throw err;
+      console.error("Depth estimation initialization failed:", err);
+
+      // エラーの詳細分析
+      if (err.message && err.message.includes("<!DOCTYPE")) {
+        console.error("Network error: Received HTML instead of model data");
+        throw new Error(
+          "Model download failed: CDN returned HTML error page. This may be due to network restrictions or temporary service issues."
+        );
+      }
+
+      if (err.message && err.message.includes("timeout")) {
+        console.error("Model loading timeout");
+        throw new Error(
+          "Model download timeout: The model files are too large or network is too slow. Please try again with a better internet connection."
+        );
+      }
+
+      if (err.message && err.message.includes("fetch")) {
+        console.error("Network fetch error:", err);
+        throw new Error(
+          "Model download failed: Unable to download model files. Please check your internet connection and firewall settings."
+        );
+      }
+
+      if (err.message && err.message.includes("WebGPU")) {
+        console.error("WebGPU error:", err);
+        throw new Error(
+          "WebGPU initialization failed. Your device may not support WebGPU."
+        );
+      }
+
+      if (err.message && err.message.includes("WASM")) {
+        console.error("WASM backend error:", err);
+        if (isMobile) {
+          throw new Error(
+            "WASM depth estimation failed on mobile device. Using fallback depth calculation."
+          );
+        } else {
+          throw new Error(
+            "WASM fallback failed. Please check browser compatibility."
+          );
+        }
+      }
+
+      // 一般的なエラーハンドリング
+      throw new Error(`Depth estimation setup failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Hugging Face CDNへの接続テスト
+   */
+  private async testHuggingFaceConnection(): Promise<void> {
+    try {
+      const testUrl =
+        "https://huggingface.co/api/models/onnx-community/depth-anything-v2-small";
+      const response = await fetch(testUrl, {
+        method: "HEAD",
+        timeout: 5000,
+      } as any);
+
+      if (!response.ok) {
+        throw new Error(`CDN connection test failed: ${response.status}`);
+      }
+
+      console.log("Hugging Face CDN connection test passed");
+    } catch (error) {
+      console.warn("Hugging Face CDN connection test failed:", error);
+      throw new Error(
+        "Unable to connect to Hugging Face CDN. Please check your internet connection and firewall settings."
+      );
     }
   }
 

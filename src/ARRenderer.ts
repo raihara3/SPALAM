@@ -42,16 +42,34 @@ export class ARRenderer {
       1000
     );
 
+    // モバイル端末検出
+    const isMobile =
+      /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent
+      );
+
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.threeCanvas,
       alpha: true,
+      antialias: !isMobile, // モバイルではアンチエイリアスを無効化してパフォーマンス向上
+      powerPreference: isMobile ? "low-power" : "high-performance",
+      precision: isMobile ? "mediump" : "highp", // モバイルでは精度を下げて安定性向上
     });
+
+    // デバイスピクセル比の設定（モバイルで重要）
+    const pixelRatio = Math.min(window.devicePixelRatio, isMobile ? 2 : 3);
+    this.renderer.setPixelRatio(pixelRatio);
+
     this.renderer.setSize(this.width, this.height);
     this.renderer.setClearColor(0x000000, 0);
+
+    console.log(
+      `ARRenderer initialized for ${isMobile ? "mobile" : "desktop"} with pixel ratio: ${pixelRatio}`
+    );
     // カメラを固定位置に配置
     // TODO: カメラの位置を調整する
     // this.camera.position.x = -0.5;
-    this.camera.position.z = 3;
+    this.camera.position.z = 0;
 
     // ウィンドウサイズ変更時のイベントリスナー
     window.addEventListener("resize", this.resizeHandler);
@@ -102,8 +120,21 @@ export class ARRenderer {
   }
 
   private resizeHandler = () => {
-    this.camera.aspect = this.width / this.height;
+    // 現在のウィンドウサイズを取得
+    const newWidth = window.innerWidth;
+    const newHeight = window.innerHeight;
+
+    // カメラのアスペクト比を更新
+    this.camera.aspect = newWidth / newHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.width, this.height);
+
+    // レンダラーのサイズを更新
+    this.renderer.setSize(newWidth, newHeight);
+
+    // 内部の幅・高さを更新
+    this.width = newWidth;
+    this.height = newHeight;
+
+    console.log(`ARRenderer resized to: ${newWidth}x${newHeight}`);
   };
 }

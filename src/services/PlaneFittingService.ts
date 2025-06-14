@@ -65,17 +65,27 @@ export class PlaneFittingService {
    */
   public async performFitting(
     featurePoints: Feature[],
-    depthMap: Float32Array,
+    depthMap: Float32Array | null,
     mapWidth: number,
     mapHeight: number,
     centerFeature: Feature
   ): Promise<PlaneFittingResult | null> {
+    // パラメータの検証
+    if (!featurePoints || featurePoints.length === 0) {
+      console.warn("No feature points provided for plane fitting");
+      return null;
+    }
+
+    // mapWidth/mapHeightがゼロまたは負の場合はデフォルト値を使用
+    const safeMapWidth = Math.max(mapWidth || 640, 1);
+    const safeMapHeight = Math.max(mapHeight || 480, 1);
+
     // 3D座標を計算
     const points3D = sampleDepthAtFeaturePoints({
       featurePoints,
       depthMap,
-      mapWidth,
-      mapHeight,
+      mapWidth: safeMapWidth,
+      mapHeight: safeMapHeight,
     });
 
     // カメラ座標系に逆投影
@@ -101,8 +111,8 @@ export class PlaneFittingService {
       planeModel,
       featurePoints,
       depthMap,
-      mapWidth,
-      mapHeight
+      safeMapWidth,
+      safeMapHeight
     );
 
     // 平面座標系を構築
@@ -155,7 +165,7 @@ export class PlaneFittingService {
   private performWeightedFitting(
     planeModel: { model: PlaneModel | null; inliers: Point3D[] },
     trackedFeatures: Feature[],
-    depthMap: Float32Array,
+    depthMap: Float32Array | null,
     mapWidth: number,
     mapHeight: number
   ): PlaneModel {
@@ -192,7 +202,7 @@ export class PlaneFittingService {
     inliers: Point3D[],
     planeModel: PlaneModel,
     trackedFeatures: Feature[],
-    depthMap: Float32Array,
+    depthMap: Float32Array | null,
     mapWidth: number,
     mapHeight: number
   ): number[] {
@@ -203,26 +213,30 @@ export class PlaneFittingService {
         -((d / this.config.weights.reprojectionSigma) ** 2)
       );
 
-      // 深度勾配による重み
-      const x = Math.round(Math.min(Math.max(pt.x, 0), mapWidth - 1));
-      const y = Math.round(Math.min(Math.max(pt.y, 0), mapHeight - 1));
+      // 深度勾配による重み（深度マップが利用可能な場合のみ）
+      let w_grad = 1.0; // デフォルト値
 
-      const gx =
-        x > 0 && x < mapWidth - 1
-          ? Math.abs(
-              depthMap[y * mapWidth + (x + 1)] -
-                depthMap[y * mapWidth + (x - 1)]
-            )
-          : 0;
-      const gy =
-        y > 0 && y < mapHeight - 1
-          ? Math.abs(
-              depthMap[(y + 1) * mapWidth + x] -
-                depthMap[(y - 1) * mapWidth + x]
-            )
-          : 0;
+      if (depthMap && mapWidth > 0 && mapHeight > 0) {
+        const x = Math.round(Math.min(Math.max(pt.x, 0), mapWidth - 1));
+        const y = Math.round(Math.min(Math.max(pt.y, 0), mapHeight - 1));
 
-      const w_grad = 1 / (1 + gx + gy);
+        const gx =
+          x > 0 && x < mapWidth - 1
+            ? Math.abs(
+                depthMap[y * mapWidth + (x + 1)] -
+                  depthMap[y * mapWidth + (x - 1)]
+              )
+            : 0;
+        const gy =
+          y > 0 && y < mapHeight - 1
+            ? Math.abs(
+                depthMap[(y + 1) * mapWidth + x] -
+                  depthMap[(y - 1) * mapWidth + x]
+              )
+            : 0;
+
+        w_grad = 1 / (1 + gx + gy);
+      }
 
       // 追跡安定性による重み
       const trackCount = trackedFeatures[i]?.trackingCount ?? 1;
