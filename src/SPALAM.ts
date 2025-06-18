@@ -751,7 +751,7 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.setPlaneGroup(group);
     console.log("平面配置完了:", group.position);
     console.log("カメラの位置:", this.arRenderer?.getCamera().position);
-    this.arRenderer?.setCameraPosition(0, 0, group.position.z * 2);
+    this.arRenderer?.setCameraPosition(0, 0, 0);
   }
 
   /**
@@ -848,9 +848,10 @@ export class SPALAM implements IServiceProvider {
       camera.position.y += normalizedDeltaY * movementScale;
     }
 
-    if (hasZMovement) {
-      camera.position.z += deltaZ * zMovementScale;
-    }
+    // if (hasZMovement) {
+    //   camera.position.z += deltaZ * zMovementScale;
+    // }
+    camera.position.z = 0;
 
     // 前フレームの値を更新
     this.previousCenterFeature.x = centerFeature.x;
@@ -862,6 +863,7 @@ export class SPALAM implements IServiceProvider {
     console.log(
       `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
     );
+    console.log("平面の位置:", this.stateManager.getPlaneGroup()?.position);
     console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
   }
 
@@ -898,7 +900,7 @@ export class SPALAM implements IServiceProvider {
     copyCamera.position.z = 0;
 
     const newPositionWS = copyCamera.localToWorld(
-      new THREE.Vector3(x, y, estimatedZ)
+      new THREE.Vector3(x, y, -1 * estimatedZ)
     );
 
     // 位置の変化が大きすぎる場合はスムージング
