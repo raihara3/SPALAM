@@ -339,6 +339,9 @@ export class SPALAM implements IServiceProvider {
   /** 前フレームの特徴点平均距離（Z軸移動検出用） */
   private previousAverageDistance: number = 0;
 
+  /** 初期の特徴点平均距離（Z位置の絶対値計算用） */
+  private initialAverageDistance: number = 0;
+
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
     serviceProvider?: IServiceProvider
@@ -752,6 +755,9 @@ export class SPALAM implements IServiceProvider {
     console.log("平面配置完了:", group.position);
     console.log("カメラの位置:", this.arRenderer?.getCamera().position);
     this.arRenderer?.setCameraPosition(0, 0, 0);
+
+    // 初期距離をリセット（新しい平面検出時）
+    this.initialAverageDistance = 0;
   }
 
   /**
@@ -809,13 +815,38 @@ export class SPALAM implements IServiceProvider {
     );
     let deltaZ = 0;
 
-    if (this.previousAverageDistance > 0 && currentAverageDistance > 0) {
+    // 初期の特徴点間距離を基準として保存
+    if (!this.initialAverageDistance && currentAverageDistance > 0) {
+      this.initialAverageDistance = currentAverageDistance;
+      console.log(
+        `初期特徴点間平均距離: ${this.initialAverageDistance.toFixed(3)}`
+      );
+    }
+
+    if (
+      this.previousAverageDistance > 0 &&
+      currentAverageDistance > 0 &&
+      this.initialAverageDistance
+    ) {
       // 特徴点間距離の変化率からZ軸移動を推定
-      // 距離が減少 = カメラが遠ざかる（Z軸正方向）
       // 距離が増加 = カメラが近づく（Z軸負方向）
+      // 距離が減少 = カメラが遠ざかる（Z軸正方向）
       const distanceRatio =
         currentAverageDistance / this.previousAverageDistance;
-      deltaZ = -(distanceRatio - 1.0) * 2.0; // スケール調整（逆方向に修正）
+
+      // より正確なZ位置推定：初期距離との比率を使用
+      const initialRatio = currentAverageDistance / this.initialAverageDistance;
+
+      // 透視投影の関係: distance ∝ 1/depth
+      // 初期深度（平面検出時の深度）を基準に計算
+      const planeResult = this.stateManager.getPlaneResult();
+      const initialDepth = planeResult ? Math.abs(planeResult.P0.z) : 1.0;
+
+      // 新しいZ位置を計算（絶対位置）
+      const estimatedZ = initialDepth / initialRatio - initialDepth;
+
+      // 現在位置との差分を計算
+      deltaZ = estimatedZ - camera.position.z;
     }
 
     // 移動量がほとんどない場合はスキップ（ノイズ除去）
@@ -843,15 +874,24 @@ export class SPALAM implements IServiceProvider {
     const movementScale = 1.0;
     const zMovementScale = 0.5; // Z軸の感度調整
 
+    // 深度を考慮したスケール補正
+    // 参照深度（平面が最初に検出された時の深度）を使用
+    const planeResult = this.stateManager.getPlaneResult();
+    const referenceDepth = planeResult ? Math.abs(planeResult.P0.z) : 1.0;
+
+    // カメラのZ位置に基づいてX/Y移動をスケール
+    // カメラが遠いほど（Z値が大きいほど）、より大きな移動量が必要
+    const depthScale = 1.0 + Math.abs(camera.position.z) / referenceDepth;
+
     if (hasXYMovement) {
-      camera.position.x += normalizedDeltaX * movementScale;
-      camera.position.y += normalizedDeltaY * movementScale;
+      camera.position.x += normalizedDeltaX * movementScale * depthScale;
+      camera.position.y += normalizedDeltaY * movementScale * depthScale;
     }
 
     // if (hasZMovement) {
-    //   camera.position.z += deltaZ * zMovementScale;
+    camera.position.z += deltaZ * zMovementScale;
     // }
-    camera.position.z = 0;
+    // camera.position.z = 0;
 
     // 前フレームの値を更新
     this.previousCenterFeature.x = centerFeature.x;
@@ -863,6 +903,15 @@ export class SPALAM implements IServiceProvider {
     console.log(
       `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
     );
+    console.log(
+      `深度スケール: ${depthScale.toFixed(3)}, 参照深度: ${referenceDepth.toFixed(3)}`
+    );
+    if (this.initialAverageDistance) {
+      const currentRatio = currentAverageDistance / this.initialAverageDistance;
+      console.log(
+        `特徴点距離比: ${currentRatio.toFixed(3)} (現在: ${currentAverageDistance.toFixed(1)}, 初期: ${this.initialAverageDistance.toFixed(1)})`
+      );
+    }
     console.log("平面の位置:", this.stateManager.getPlaneGroup()?.position);
     console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
   }
