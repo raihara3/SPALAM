@@ -416,7 +416,6 @@ export class SPALAM implements IServiceProvider {
           this.video = cameraController.getVideo();
         }
         this.video.style.display = "none";
-        console.debug("Video element:", this.video);
 
         this.arRenderer = new ARRenderer({
           width: this.video.width,
@@ -456,7 +455,6 @@ export class SPALAM implements IServiceProvider {
 
       const initializeApp = async () => {
         try {
-          console.log("OpenCV.js initialized:", cv.getBuildInformation());
           await setup();
           this.processPlaneDetection();
 
@@ -633,9 +631,7 @@ export class SPALAM implements IServiceProvider {
 
       // 深度マップが利用できない場合の警告（モバイル端末など）
       if (!frameResult.depthMap) {
-        console.log(
-          "Processing frame without AI depth estimation - using fallback depth calculation"
-        );
+        // フォールバック深度計算を使用
       }
 
       // 平面フィッティングを実行
@@ -679,9 +675,6 @@ export class SPALAM implements IServiceProvider {
       } else {
         // 進捗をログ
         const progress = this.planeFittingService.getProgress();
-        console.log(
-          `フィッティング完了: ${progress.current}/${progress.total}`
-        );
       }
     }, 100); // 100msごとに処理
   }
@@ -752,8 +745,6 @@ export class SPALAM implements IServiceProvider {
 
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
-    console.log("平面配置完了:", group.position);
-    console.log("カメラの位置:", this.arRenderer?.getCamera().position);
     this.arRenderer?.setCameraPosition(0, 0, 0);
 
     // 初期距離をリセット（新しい平面検出時）
@@ -798,9 +789,6 @@ export class SPALAM implements IServiceProvider {
         features,
         centerFeature
       );
-      console.log(
-        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
-      );
       return;
     }
 
@@ -818,9 +806,6 @@ export class SPALAM implements IServiceProvider {
     // 初期の特徴点間距離を基準として保存
     if (!this.initialAverageDistance && currentAverageDistance > 0) {
       this.initialAverageDistance = currentAverageDistance;
-      console.log(
-        `初期特徴点間平均距離: ${this.initialAverageDistance.toFixed(3)}`
-      );
     }
 
     if (
@@ -858,9 +843,6 @@ export class SPALAM implements IServiceProvider {
     const hasZMovement = Math.abs(deltaZ) >= zThreshold;
 
     if (!hasXYMovement && !hasZMovement) {
-      console.log(
-        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
-      );
       return;
     }
 
@@ -898,22 +880,6 @@ export class SPALAM implements IServiceProvider {
     this.previousCenterFeature.y = centerFeature.y;
     this.previousFeatureCount = features.length;
     this.previousAverageDistance = currentAverageDistance;
-
-    // 毎フレームカメラ位置をコンソール出力
-    console.log(
-      `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
-    );
-    console.log(
-      `深度スケール: ${depthScale.toFixed(3)}, 参照深度: ${referenceDepth.toFixed(3)}`
-    );
-    if (this.initialAverageDistance) {
-      const currentRatio = currentAverageDistance / this.initialAverageDistance;
-      console.log(
-        `特徴点距離比: ${currentRatio.toFixed(3)} (現在: ${currentAverageDistance.toFixed(1)}, 初期: ${this.initialAverageDistance.toFixed(1)})`
-      );
-    }
-    console.log("平面の位置:", this.stateManager.getPlaneGroup()?.position);
-    console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
   }
 
   /**
