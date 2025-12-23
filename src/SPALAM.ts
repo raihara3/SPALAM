@@ -640,7 +640,9 @@ export class SPALAM implements IServiceProvider {
         frameResult.depthMap,
         this.frameProcessor.getCanvasWidth(),
         this.frameProcessor.getCanvasHeight(),
-        frameResult.centerFeature
+        frameResult.centerFeature,
+        this.video?.videoWidth,
+        this.video?.videoHeight
       );
 
       // フィッティングが完了したかチェック

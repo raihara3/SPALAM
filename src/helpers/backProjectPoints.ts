@@ -1,43 +1,75 @@
-// types
 import { Point3D } from "../types";
+import { CameraIntrinsicsConfig } from "../config/types";
 
 /**
- * @param {Array<Point3D>} points
- *   - { x, y }: 画像上のピクセル座標
- *   - z       : 深度マップから取得した距離値
- * @returns {Array<Point3D>}
- *   - カメラ座標系での3D点群
+ * カメラ内部パラメータを計算
  */
-function backProjectPoints(points: Array<Point3D>) {
-  const focalLength = 27; // カメラの焦点距離
-  const sensorWidth = 36; // センサーの幅
-  const imageWidth = 640; // 画像の幅
-  const imageHeight = 480; // 画像の高さ
+export interface CameraIntrinsics {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+}
 
-  const Fx = (focalLength / sensorWidth) * imageWidth; // カメラの焦点距離
-  const Fy = (focalLength / sensorWidth) * imageHeight; // カメラの焦点距離
-  const Cx = imageWidth / 2; // カメラの光学中心
-  const Cy = imageHeight / 2; // カメラの光学中心
+/**
+ * FoVと画像サイズから焦点距離を計算
+ * f = (width / 2) / tan(hfov / 2)
+ */
+function calculateFocalLengthFromFov(
+  horizontalFovDegrees: number,
+  imageWidth: number
+): number {
+  const halfFovRadians = ((horizontalFovDegrees / 2) * Math.PI) / 180;
+  return imageWidth / 2 / Math.tan(halfFovRadians);
+}
 
-  // const Fx = 2584; //カメラの焦点距離
-  // const Fy = 4563; //カメラの焦点距離
-  // const Cx = 1057; //カメラの光学中心
-  // const Cy = 1663; //カメラの光学中心
+/**
+ * カメラ内部パラメータを取得
+ */
+export function getCameraIntrinsics(
+  config: CameraIntrinsicsConfig,
+  imageWidth: number,
+  imageHeight: number
+): CameraIntrinsics {
+  const fx =
+    config.focalLengthPixels !== null
+      ? config.focalLengthPixels
+      : calculateFocalLengthFromFov(config.horizontalFov, imageWidth);
 
-  const points3D: Array<Point3D> = [];
+  const fy = fx;
 
-  // 各点について逆投影を実行
+  const cx = imageWidth / 2 + config.principalPointOffset.x * imageWidth;
+  const cy = imageHeight / 2 + config.principalPointOffset.y * imageHeight;
+
+  return { fx, fy, cx, cy };
+}
+
+export interface BackProjectParams {
+  points: Point3D[];
+  intrinsics: CameraIntrinsics;
+}
+
+/**
+ * 2D特徴点と深度から3Dカメラ座標系に逆投影
+ *
+ * @param params.points - { x, y }: 画像上のピクセル座標, z: 深度値
+ * @param params.intrinsics - カメラ内部パラメータ
+ * @returns カメラ座標系での3D点群
+ */
+function backProjectPoints(params: BackProjectParams): Point3D[] {
+  const { points, intrinsics } = params;
+  const { fx, fy, cx, cy } = intrinsics;
+
+  const points3D: Point3D[] = [];
+
   for (const point of points) {
-    // カメラの内部パラメータを使用して3D座標に変換
-    // Z = depth (そのまま使用)
     const z = point.z;
-    // X = (x - Cx) * Z / Fx
-    const x = ((point.x - Cx) * z) / Fx;
-    // Y = (y - Cy) * Z / Fy
-    const y = ((point.y - Cy) * z) / Fy;
+    const x = ((point.x - cx) * z) / fx;
+    const y = ((point.y - cy) * z) / fy;
 
     points3D.push({ x, y, z, id: point.id });
   }
+
   return points3D;
 }
 

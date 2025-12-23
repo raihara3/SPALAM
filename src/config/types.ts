@@ -110,6 +110,18 @@ export interface DepthEstimationConfig {
 }
 
 /**
+ * カメラ内部パラメータの設定
+ */
+export interface CameraIntrinsicsConfig {
+  /** 水平視野角（度） - 焦点距離の計算に使用 */
+  horizontalFov: number;
+  /** 焦点距離（ピクセル単位） - 直接指定する場合。nullの場合はFoVから計算 */
+  focalLengthPixels: number | null;
+  /** 光学中心のオフセット（画像中心からの比率）。通常は0 */
+  principalPointOffset: { x: number; y: number };
+}
+
+/**
  * 平面推定の設定
  */
 export interface PlaneEstimationConfig {
@@ -130,6 +142,8 @@ export interface PlaneEstimationConfig {
     /** 追跡安定性の最大フレーム数 */
     maxTrackingFrames: number;
   };
+  /** カメラ内部パラメータ */
+  cameraIntrinsics: CameraIntrinsicsConfig;
 }
 
 /**
