@@ -554,60 +554,32 @@ export class SPALAM implements IServiceProvider {
    * メッシュの位置と回転を調整する
    * @param group - Three.jsグループ
    * @param P0 - 平面の原点（カメラ座標系）
-   * @param centerCS - 中心点（カメラ座標系）
    * @param uVecCS - U軸ベクトル（カメラ座標系）
    * @param vVecCS - V軸ベクトル（カメラ座標系）
    * @param normalCS - 法線ベクトル（カメラ座標系）
-   * @param midU - U軸中央座標
-   * @param midV - V軸中央座標
-   * @param useCenter - 中心点を使用するか
    */
   private adjustMeshTransform(
     group: THREE.Group,
-    P0: Point3D, // in camera-space
-    centerCS: THREE.Vector3, // in camera-space
-    uVecCS: THREE.Vector3, // in camera-space
-    vVecCS: THREE.Vector3, // in camera-space
-    normalCS: THREE.Vector3, // in camera-space
-    midU: number,
-    midV: number,
-    useCenter: boolean = false
+    P0: Point3D,
+    uVecCS: THREE.Vector3,
+    vVecCS: THREE.Vector3,
+    normalCS: THREE.Vector3
   ) {
     const camera = this.arRenderer!.getCamera();
 
-    // 1) カメラ空間の平面中心を求める
-    const planeCenterCS = new THREE.Vector3()
-      .copy(P0)
-      .add(uVecCS.clone().multiplyScalar(midU))
-      .add(vVecCS.clone().multiplyScalar(midV));
-
-    // 2) カメラ空間→ワールド空間に変換（カメラ位置はリセットしない）
-    const copyCamera = camera.clone();
-
-    // 3) ワールド空間の位置をセット
-    // P0は既に中心特徴点の位置なので、それをワールド座標に変換
-    const p0WS = copyCamera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
+    const p0WS = camera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
     group.position.copy(p0WS);
 
-    // x座標とy座標を0に固定（平面追跡アプローチ）
-    group.position.x = 0;
-    group.position.y = 0;
-
-    // 4) 平面の基底ベクトルはカメラ座標系のまま使用（カメラの回転に追従させない）
     const worldU = uVecCS.clone().normalize();
     const worldV = vVecCS.clone().normalize();
     const worldN = normalCS.clone().normalize();
 
-    // 5) 直交基底から回転行列を作成
     const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
-
-    // 6) x軸にプラス90度回転を追加
     const rotationX = new THREE.Matrix4().makeRotationX(
       THREE.MathUtils.degToRad(90)
     );
     basis.multiply(rotationX);
 
-    // 7) メッシュに回転を適用
     group.setRotationFromMatrix(basis);
   }
 
@@ -701,8 +673,6 @@ export class SPALAM implements IServiceProvider {
       maxV = Math.max(...vs);
     const planeWidth = maxU - minU;
     const planeHeight = maxV - minV;
-    const midU = (minU + maxU) / 2;
-    const midV = (minV + maxV) / 2;
 
     // ジオメトリの生成
     const scene = this.arRenderer!.getScene();
@@ -733,17 +703,7 @@ export class SPALAM implements IServiceProvider {
     scene.add(group);
 
     // 位置と回転の調整
-    this.adjustMeshTransform(
-      group,
-      P0,
-      center,
-      uVec,
-      vVec,
-      normal,
-      midU,
-      midV,
-      true
-    );
+    this.adjustMeshTransform(group, P0, uVec, vVec, normal);
 
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
@@ -893,36 +853,25 @@ export class SPALAM implements IServiceProvider {
 
     if (!planeGroup || !planeResult) return;
 
-    // 簡易的な深度計算（平面検出時の深度を使用）
     const estimatedZ = planeResult.P0.z;
 
-    // 特徴点の正規化座標を計算
     const width = this.frameProcessor.getCanvasWidth();
     const height = this.frameProcessor.getCanvasHeight();
     const normalizedX = (centerFeature.x / width - 0.5) * 2;
-    const normalizedY = -(centerFeature.y / height - 0.5) * 2; // Y軸を反転
+    const normalizedY = -(centerFeature.y / height - 0.5) * 2;
 
-    // カメラのアスペクト比とFOVを考慮
     const camera = this.arRenderer!.getCamera();
     const aspect = camera.aspect;
     const fov = (camera.fov * Math.PI) / 180;
     const tanHalfFov = Math.tan(fov / 2);
 
-    // 3D位置を計算（カメラ座標系）
     const x = normalizedX * tanHalfFov * aspect * estimatedZ;
     const y = normalizedY * tanHalfFov * estimatedZ;
 
-    // カメラ座標系からワールド座標系への変換
-    const copyCamera = camera.clone();
-    copyCamera.position.z = 0;
+    const positionCS = new THREE.Vector3(x, y, -estimatedZ);
+    const newPositionWS = camera.localToWorld(positionCS.clone());
 
-    const newPositionWS = copyCamera.localToWorld(
-      new THREE.Vector3(x, y, -1 * estimatedZ)
-    );
-
-    // 位置の変化が大きすぎる場合はスムージング
-    const smoothingFactor = 0.7; // 0.0-1.0の範囲で、値が小さいほどスムーズ
-
+    const smoothingFactor = 0.3;
     planeGroup.position.lerp(newPositionWS, smoothingFactor);
   }
 
