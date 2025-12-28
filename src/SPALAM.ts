@@ -14,6 +14,7 @@ import {
   CameraInfo,
   SPALAMError,
   SPALAMErrorType,
+  Feature,
 } from "./types";
 
 // modules
@@ -330,17 +331,6 @@ export class SPALAM implements IServiceProvider {
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
 
-  /** 前フレームの中心特徴点位置（カメラ移動追跡用） */
-  private previousCenterFeature: { x: number; y: number } | null = null;
-
-  /** 前フレームの特徴点数（Z軸移動検出用） */
-  private previousFeatureCount: number = 0;
-
-  /** 前フレームの特徴点平均距離（Z軸移動検出用） */
-  private previousAverageDistance: number = 0;
-
-  /** 初期の特徴点平均距離（Z位置の絶対値計算用） */
-  private initialAverageDistance: number = 0;
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -567,7 +557,8 @@ export class SPALAM implements IServiceProvider {
   ) {
     const camera = this.arRenderer!.getCamera();
 
-    const p0WS = camera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
+    // Three.jsの座標系: -Zがカメラの前方なので、深度値を負にする
+    const p0WS = camera.localToWorld(new THREE.Vector3(P0.x, P0.y, -P0.z));
     group.position.copy(p0WS);
 
     const worldU = uVecCS.clone().normalize();
@@ -708,171 +699,43 @@ export class SPALAM implements IServiceProvider {
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
     this.arRenderer?.setCameraPosition(0, 0, 0);
-
-    // 初期距離をリセット（新しい平面検出時）
-    this.initialAverageDistance = 0;
   }
 
   /**
-   * 特徴点間の平均距離を計算（Z軸移動検出用）
-   */
-  private calculateAverageFeatureDistance(
-    features: any[],
-    centerFeature: Feature
-  ): number {
-    if (features.length < 2) return 0;
-
-    let totalDistance = 0;
-    let count = 0;
-
-    for (const feature of features) {
-      const dx = feature.x - centerFeature.x;
-      const dy = feature.y - centerFeature.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      totalDistance += distance;
-      count++;
-    }
-
-    return count > 0 ? totalDistance / count : 0;
-  }
-
-  /**
-   * カメラの移動を追跡し、Three.jsカメラの位置を更新
+   * 平面位置を中心特徴点に基づいて更新
+   * 特徴点の位置から直接平面の3D位置を計算し、ドリフトなく追従
    */
   private updateCameraPosition(centerFeature: Feature): void {
     const camera = this.arRenderer!.getCamera();
-    const features = this.frameProcessor.getFeatures() || [];
-
-    // 前フレームの特徴点位置がない場合は初期化
-    if (!this.previousCenterFeature) {
-      this.previousCenterFeature = { x: centerFeature.x, y: centerFeature.y };
-      this.previousFeatureCount = features.length;
-      this.previousAverageDistance = this.calculateAverageFeatureDistance(
-        features,
-        centerFeature
-      );
-      return;
-    }
-
-    // X, Y軸の移動量を計算（逆方向に修正）
-    const deltaX = -(centerFeature.x - this.previousCenterFeature.x);
-    const deltaY = -(centerFeature.y - this.previousCenterFeature.y);
-
-    // Z軸の移動量を特徴点の平均距離変化から推定
-    const currentAverageDistance = this.calculateAverageFeatureDistance(
-      features,
-      centerFeature
-    );
-    let deltaZ = 0;
-
-    // 初期の特徴点間距離を基準として保存
-    if (!this.initialAverageDistance && currentAverageDistance > 0) {
-      this.initialAverageDistance = currentAverageDistance;
-    }
-
-    if (
-      this.previousAverageDistance > 0 &&
-      currentAverageDistance > 0 &&
-      this.initialAverageDistance
-    ) {
-      // 特徴点間距離の変化率からZ軸移動を推定
-      // 距離が増加 = カメラが近づく（Z軸負方向）
-      // 距離が減少 = カメラが遠ざかる（Z軸正方向）
-      const distanceRatio =
-        currentAverageDistance / this.previousAverageDistance;
-
-      // より正確なZ位置推定：初期距離との比率を使用
-      const initialRatio = currentAverageDistance / this.initialAverageDistance;
-
-      // 透視投影の関係: distance ∝ 1/depth
-      // 初期深度（平面検出時の深度）を基準に計算
-      const planeResult = this.stateManager.getPlaneResult();
-      const initialDepth = planeResult ? Math.abs(planeResult.P0.z) : 1.0;
-
-      // 新しいZ位置を計算（絶対位置）
-      const estimatedZ = initialDepth / initialRatio - initialDepth;
-
-      // 現在位置との差分を計算
-      deltaZ = estimatedZ - camera.position.z;
-    }
-
-    // 移動量がほとんどない場合はスキップ（ノイズ除去）
-    const xyThreshold = 2.0; // ピクセル単位
-    const zThreshold = 0.05; // Z軸の閾値
-
-    const hasXYMovement =
-      Math.abs(deltaX) >= xyThreshold || Math.abs(deltaY) >= xyThreshold;
-    const hasZMovement = Math.abs(deltaZ) >= zThreshold;
-
-    if (!hasXYMovement && !hasZMovement) {
-      return;
-    }
-
-    // 画面サイズで正規化（X, Y軸）
-    const width = this.frameProcessor.getCanvasWidth();
-    const height = this.frameProcessor.getCanvasHeight();
-    const normalizedDeltaX = deltaX / width;
-    const normalizedDeltaY = deltaY / height; // Y軸反転を削除（既に逆方向計算済み）
-
-    // 移動距離をカメラの位置に反映
-    const movementScale = 1.0;
-    const zMovementScale = 0.5; // Z軸の感度調整
-
-    // 深度を考慮したスケール補正
-    // 参照深度（平面が最初に検出された時の深度）を使用
-    const planeResult = this.stateManager.getPlaneResult();
-    const referenceDepth = planeResult ? Math.abs(planeResult.P0.z) : 1.0;
-
-    // カメラのZ位置に基づいてX/Y移動をスケール
-    // カメラが遠いほど（Z値が大きいほど）、より大きな移動量が必要
-    const depthScale = 1.0 + Math.abs(camera.position.z) / referenceDepth;
-
-    if (hasXYMovement) {
-      camera.position.x += normalizedDeltaX * movementScale * depthScale;
-      camera.position.y += normalizedDeltaY * movementScale * depthScale;
-    }
-
-    // if (hasZMovement) {
-    camera.position.z += deltaZ * zMovementScale;
-    // }
-    // camera.position.z = 0;
-
-    // 前フレームの値を更新
-    this.previousCenterFeature.x = centerFeature.x;
-    this.previousCenterFeature.y = centerFeature.y;
-    this.previousFeatureCount = features.length;
-    this.previousAverageDistance = currentAverageDistance;
-  }
-
-  /**
-   * 平面の位置を中心特徴点に基づいて更新
-   */
-  private updatePlanePosition(centerFeature: Feature): void {
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
-    if (!planeGroup || !planeResult) return;
-
-    const estimatedZ = planeResult.P0.z;
+    if (!planeResult || !planeGroup) return;
 
     const width = this.frameProcessor.getCanvasWidth();
     const height = this.frameProcessor.getCanvasHeight();
+
+    // 中心特徴点の正規化座標 (-1 to 1)
     const normalizedX = (centerFeature.x / width - 0.5) * 2;
     const normalizedY = -(centerFeature.y / height - 0.5) * 2;
 
-    const camera = this.arRenderer!.getCamera();
-    const aspect = camera.aspect;
-    const fov = (camera.fov * Math.PI) / 180;
-    const tanHalfFov = Math.tan(fov / 2);
+    // 深度（初期検出時の値を使用）
+    const depth = Math.abs(planeResult.P0.z);
 
-    const x = normalizedX * tanHalfFov * aspect * estimatedZ;
-    const y = normalizedY * tanHalfFov * estimatedZ;
+    // カメラのFoVから3D位置を計算
+    const fovRadians = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fovRadians / 2);
 
-    const positionCS = new THREE.Vector3(x, y, -estimatedZ);
-    const newPositionWS = camera.localToWorld(positionCS.clone());
+    // カメラ座標系での位置
+    const x = normalizedX * tanHalfFov * camera.aspect * depth;
+    const y = normalizedY * tanHalfFov * depth;
+    const z = -depth;
 
-    const smoothingFactor = 0.3;
-    planeGroup.position.lerp(newPositionWS, smoothingFactor);
+    // ワールド座標に変換（カメラは原点固定）
+    const targetPosition = new THREE.Vector3(x, y, z);
+
+    // スムーズに追従（lerp係数を高くして即座に追従）
+    planeGroup.position.lerp(targetPosition, 0.8);
   }
 
   /**
@@ -910,14 +773,10 @@ export class SPALAM implements IServiceProvider {
       };
       this.emit("frame:processed", frameData);
 
-      // 中心特徴点が存在する場合はカメラ位置を更新
-      if (centerFeature) {
-        this.updateCameraPosition(centerFeature);
-      }
-
-      // 平面が検出済みで、中心特徴点が存在する場合は位置を更新
+      // 平面が検出済みで、中心特徴点が存在する場合はカメラ位置を更新
+      // 平面はワールド座標で固定し、カメラのみを動かすことでAR表示を実現
       if (this.stateManager.isPlaneDetected() && centerFeature) {
-        this.updatePlanePosition(centerFeature);
+        this.updateCameraPosition(centerFeature);
       }
     }
 
@@ -1015,10 +874,7 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
-    this.previousCenterFeature = null; // カメラ移動追跡もリセット
-    this.previousFeatureCount = 0;
-    this.previousAverageDistance = 0;
-    return this; // チェーンメソッド用
+    return this;
   }
 
   /**

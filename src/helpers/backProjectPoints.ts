@@ -65,7 +65,8 @@ function backProjectPoints(params: BackProjectParams): Point3D[] {
   for (const point of points) {
     const z = point.z;
     const x = ((point.x - cx) * z) / fx;
-    const y = ((point.y - cy) * z) / fy;
+    // 画像座標系(Y下向き)からThree.js座標系(Y上向き)への変換
+    const y = -((point.y - cy) * z) / fy;
 
     points3D.push({ x, y, z, id: point.id });
   }
