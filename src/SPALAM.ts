@@ -37,6 +37,10 @@ import { CameraController } from "./utils/CameraController";
 import { ServiceContainer } from "./utils/ServiceContainer";
 import { IServiceProvider } from "./interfaces/IServiceProvider";
 
+// tracking
+import { DeviceMotionTracker } from "./tracking";
+import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
+
 // config
 import { SPALAMConfig } from "./config/types";
 import { mergeWithDefaults } from "./config/defaults";
@@ -331,6 +335,13 @@ export class SPALAM implements IServiceProvider {
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
 
+  /** デバイスモーショントラッカー */
+  private deviceMotionTracker: DeviceMotionTracker | null = null;
+  /** IMUトラッキングが有効かどうか */
+  private imuTrackingEnabled: boolean = false;
+  /** IMUデバッグ情報を表示するかどうか */
+  private showIMUDebug: boolean = false;
+
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -474,11 +485,10 @@ export class SPALAM implements IServiceProvider {
       }
 
       // OpenCV.jsの読み込み完了を待機
-      let timeoutId: NodeJS.Timeout;
       const timeout = setTimeout(() => {
         reject(
           new SPALAMError(
-            SPALAMErrorType.INITIALIZATION_ERROR,
+            SPALAMErrorType.OPENCV_INIT_FAILED,
             "OpenCV.js loading timeout"
           )
         );
@@ -494,7 +504,7 @@ export class SPALAM implements IServiceProvider {
         clearTimeout(timeout);
         reject(
           new SPALAMError(
-            SPALAMErrorType.INITIALIZATION_ERROR,
+            SPALAMErrorType.OPENCV_INIT_FAILED,
             "OpenCV.js is not available"
           )
         );
@@ -637,9 +647,6 @@ export class SPALAM implements IServiceProvider {
           };
           this.emit("plane:detected", planeData);
         }
-      } else {
-        // 進捗をログ
-        const progress = this.planeFittingService.getProgress();
       }
     }, 100); // 100msごとに処理
   }
@@ -743,6 +750,11 @@ export class SPALAM implements IServiceProvider {
    * ARレンダリングを実行
    */
   public render(): void {
+    // IMUトラッキングが有効な場合、カメラの姿勢を更新
+    if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
+      this.updateCameraFromIMU();
+    }
+
     // 常に特徴点検出は実行（カメラ映像の更新のため）
     if (this.frameProcessor.isReady()) {
       this.frameProcessor.renderFeatures();
@@ -775,7 +787,8 @@ export class SPALAM implements IServiceProvider {
 
       // 平面が検出済みで、中心特徴点が存在する場合はカメラ位置を更新
       // 平面はワールド座標で固定し、カメラのみを動かすことでAR表示を実現
-      if (this.stateManager.isPlaneDetected() && centerFeature) {
+      // ただし、IMUトラッキング有効時は位置更新を無効化（Phase 2で視覚とIMUを統合予定）
+      if (this.stateManager.isPlaneDetected() && centerFeature && !this.imuTrackingEnabled) {
         this.updateCameraPosition(centerFeature);
       }
     }
@@ -784,6 +797,24 @@ export class SPALAM implements IServiceProvider {
       this.arRenderer.render();
     }
     this.animationFrameId = requestAnimationFrame(() => this.render());
+  }
+
+  /**
+   * IMUからカメラの姿勢を更新
+   */
+  private updateCameraFromIMU(): void {
+    if (!this.deviceMotionTracker || !this.arRenderer) return;
+
+    const orientation = this.deviceMotionTracker.getOrientation();
+    if (!orientation) return;
+
+    const camera = this.arRenderer.getCamera();
+    camera.quaternion.copy(orientation);
+
+    // デバッグ: IMU姿勢更新を確認（本番では削除）
+    if (this.showIMUDebug) {
+      console.log(`IMU: q(${orientation.x.toFixed(3)}, ${orientation.y.toFixed(3)}, ${orientation.z.toFixed(3)}, ${orientation.w.toFixed(3)})`);
+    }
   }
 
   /**
@@ -902,6 +933,12 @@ export class SPALAM implements IServiceProvider {
 
     // イベントリスナーをクリア
     this.eventListeners.clear();
+
+    // デバイスモーショントラッカーを解放
+    if (this.deviceMotionTracker) {
+      this.deviceMotionTracker.dispose();
+      this.deviceMotionTracker = null;
+    }
 
     // ARレンダラーを解放
     if (this.arRenderer) {
@@ -1161,6 +1198,138 @@ export class SPALAM implements IServiceProvider {
     if (!this.animationFrameId) {
       this.render();
     }
+    return this;
+  }
+
+  /**
+   * IMUトラッキングを有効化
+   *
+   * デバイスのIMU（加速度計・ジャイロスコープ）を使用して
+   * カメラの姿勢をリアルタイムで更新します。
+   *
+   * @returns Promise<boolean> - 初期化成功時はtrue
+   *
+   * @example
+   * ```typescript
+   * const success = await spalam.enableIMUTracking();
+   * if (success) {
+   *   console.log('IMUトラッキングが有効になりました');
+   * }
+   * ```
+   */
+  public async enableIMUTracking(): Promise<boolean> {
+    if (this.deviceMotionTracker) {
+      this.imuTrackingEnabled = true;
+      return true;
+    }
+
+    this.deviceMotionTracker = new DeviceMotionTracker();
+
+    this.deviceMotionTracker.addListener((event: DeviceMotionTrackerEvent) => {
+      if (event.type === "stateChange") {
+        console.log("IMU state changed:", event.state);
+        this.emit("imu:stateChange" as any, event);
+      } else if (event.type === "orientationUpdate") {
+        // 姿勢データを受信したらトラッキングを有効化
+        if (!this.imuTrackingEnabled) {
+          this.imuTrackingEnabled = true;
+          console.log("IMU tracking enabled (orientation data received)");
+        }
+      } else if (event.type === "error") {
+        console.error("IMU tracking error:", event.error);
+      }
+    });
+
+    const initialized = await this.deviceMotionTracker.initialize();
+
+    if (initialized) {
+      // キャリブレーション完了を待たずに、権限が得られたらすぐに有効化
+      // orientationUpdateイベントで最終的に有効化される
+      console.log("IMU permission granted, waiting for orientation data...");
+
+      // 短いタイムアウトで最初のイベントを待つ
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      if (this.imuTrackingEnabled) {
+        console.log("IMU tracking enabled successfully");
+        return true;
+      }
+
+      // まだ有効化されていなくても、権限があれば成功とみなす
+      this.imuTrackingEnabled = true;
+      console.log("IMU tracking enabled (permission granted)");
+      return true;
+    }
+
+    console.warn("IMU tracking initialization failed");
+    return false;
+  }
+
+  /**
+   * IMUトラッキングを無効化
+   *
+   * @returns SPALAMインスタンス（メソッドチェーン用）
+   */
+  public disableIMUTracking(): SPALAM {
+    this.imuTrackingEnabled = false;
+    return this;
+  }
+
+  /**
+   * IMUトラッキングが有効かどうかを取得
+   */
+  public isIMUTrackingEnabled(): boolean {
+    return this.imuTrackingEnabled;
+  }
+
+  /**
+   * IMUトラッキングが動作中かどうかを取得
+   */
+  public isIMUTracking(): boolean {
+    return (
+      this.imuTrackingEnabled &&
+      this.deviceMotionTracker?.isTracking() === true
+    );
+  }
+
+  /**
+   * デバイスモーショントラッカーを取得
+   */
+  public getDeviceMotionTracker(): DeviceMotionTracker | null {
+    return this.deviceMotionTracker;
+  }
+
+  /**
+   * IMUデバッグ表示を有効化/無効化
+   */
+  public setIMUDebug(enabled: boolean): SPALAM {
+    this.showIMUDebug = enabled;
+    return this;
+  }
+
+  /**
+   * IMU初期化の進捗を取得
+   */
+  public getIMUInitializationProgress(): number {
+    if (!this.deviceMotionTracker) return 0;
+    return this.deviceMotionTracker.getIMUInitializer().getProgress();
+  }
+
+  /**
+   * ドリフト統計を取得
+   */
+  public getIMUDriftStatistics(): ReturnType<
+    DeviceMotionTracker["getDriftStatistics"]
+  > | null {
+    if (!this.deviceMotionTracker) return null;
+    return this.deviceMotionTracker.getDriftStatistics();
+  }
+
+  /**
+   * ドリフト計測をリセット
+   */
+  public resetIMUDriftMeasurement(): SPALAM {
+    this.deviceMotionTracker?.resetDriftMeasurement();
     return this;
   }
 }

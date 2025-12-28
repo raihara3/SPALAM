@@ -3,9 +3,25 @@ export { FeatureDetector } from './FeatureDetector';
 export { DepthEstimation } from './DepthEstimation';
 export { ARRenderer } from './ARRenderer';
 
+// Tracking (Phase 1: IMU Integration)
+export {
+  DeviceMotionTracker,
+  PoseRepresentation,
+  IMUInitializer,
+} from './tracking';
+
 export type { Feature } from './types/Feature';
 export type { PlaneModel } from './types/Plane';
 export type { Point3D, Point2D } from './types/Point';
+export type {
+  DeviceOrientationData,
+  DeviceMotionData,
+  DeviceMotionTrackerState,
+  DeviceMotionTrackerEvent,
+  IMUInitializationState,
+  IMUInitializationResult,
+  DriftStatistics,
+} from './types/DeviceMotion';
 
 export * from './helpers/backProjectPoints';
 export * from './helpers/computeConvexHull2D';
