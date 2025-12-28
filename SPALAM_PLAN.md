@@ -83,35 +83,133 @@
 
 ## 実装計画
 
+> **技術アドバイザーからの注意事項** (`memo/phase1.md`)
+>
+> - IMU単独では時間経過とともにドリフト（誤差累積）が発生する
+> - Visual-Inertial Fusion（視覚+慣性統合）が必須
+> - 初期化プロセスの最適化が重要
+> - リー群表現（SE(3)/SO(3)）の活用を推奨
+
+---
+
 ### Phase 1: デバイスモーション統合
 
-**状態: ❌ 未着手**
+**状態: 🚧 着手予定**
 
 #### 目標
 デバイスのIMU（加速度計・ジャイロスコープ）を利用した姿勢推定の基盤構築
 
+#### ⚠️ 重要な制約
+
+| 制約 | 説明 | 対策（Phase 2で実施） |
+|------|------|----------------------|
+| **ドリフト問題** | IMU単独では誤差が累積し、数秒〜数十秒で位置がずれる | Phase 2でVIO（視覚統合）により補正 |
+| **スケール不定性** | 加速度からの位置推定では絶対スケールが不明 | 視覚情報との融合で解決 |
+| **初期化の難しさ** | 重力方向・初期姿勢の正確な推定が必要 | 静止状態検出による初期化 |
+
 #### タスク
 
+**1.1 DeviceMotionTracker の作成**
+
 - [ ] `src/tracking/DeviceMotionTracker.ts` の作成
-  - [ ] WebXR Device Motion API実装
-  - [ ] 権限要求ハンドリング
-  - [ ] フォールバック機能
-- [ ] `src/utils/CameraController.ts` の拡張
-  - [ ] デバイス姿勢からカメラ更新
-  - [ ] 座標系変換
+  - [ ] DeviceOrientation API実装（alpha, beta, gamma取得）
+  - [ ] DeviceMotion API実装（加速度、回転速度取得）
+  - [ ] iOS Safari向け権限要求（`DeviceOrientationEvent.requestPermission()`）
+  - [ ] Android Chrome対応
+  - [ ] HTTPS環境チェック（センサーAPIはSecure Context必須）
+- [ ] `src/types/DeviceMotion.ts` の作成（型定義）
+
+**1.2 姿勢表現と座標変換**
+
+- [ ] `src/tracking/PoseRepresentation.ts` の作成
+  - [ ] クォータニオン ↔ オイラー角変換
+  - [ ] デバイス座標系 → Three.js座標系変換
+  - [ ] 重力方向の検出と補正
+- [ ] Three.jsカメラへの姿勢適用
+
+**1.3 初期化プロセス**
+
+- [ ] `src/tracking/IMUInitializer.ts` の作成
+  - [ ] 静止状態検出（加速度の分散が閾値以下）
+  - [ ] 重力ベクトルの推定
+  - [ ] 初期姿勢のキャリブレーション
+  - [ ] 初期化完了の判定基準
+
+**1.4 ドリフト可視化（デバッグ用）**
+
+- [ ] ドリフト量の計測・表示機能
+- [ ] Phase 2でのVIO統合後に比較検証するための基準データ記録
 
 #### 設計
 
 ```typescript
+// src/tracking/DeviceMotionTracker.ts
 class DeviceMotionTracker {
-  private orientation: DeviceOrientationData;
-  private acceleration: DeviceMotionData;
+  private orientation: DeviceOrientationData | null = null;
+  private motion: DeviceMotionData | null = null;
+  private initialized: boolean = false;
+  private gravityVector: Vector3 | null = null;
 
-  initializeTracking(): Promise<boolean>;
-  getCurrentPose(): Matrix4x4;
-  getRotationMatrix(): Matrix3x3;
+  // 初期化（権限要求含む）
+  async initialize(): Promise<boolean>;
+
+  // 現在の姿勢取得（クォータニオン）
+  getOrientation(): Quaternion | null;
+
+  // 現在の回転行列取得（Three.js互換）
+  getRotationMatrix(): Matrix4 | null;
+
+  // 加速度取得（重力除去済み）
+  getLinearAcceleration(): Vector3 | null;
+
+  // 角速度取得
+  getAngularVelocity(): Vector3 | null;
+
+  // デバイス座標系 → ワールド座標系変換
+  deviceToWorld(deviceVector: Vector3): Vector3;
+
+  // リソース解放
+  dispose(): void;
+}
+
+// src/tracking/IMUInitializer.ts
+class IMUInitializer {
+  private samples: MotionSample[] = [];
+  private readonly requiredSamples: number = 50; // 約1秒分
+
+  // サンプル追加
+  addSample(acceleration: Vector3, angularVelocity: Vector3): void;
+
+  // 静止状態判定
+  isStationary(): boolean;
+
+  // 初期化完了判定
+  isReady(): boolean;
+
+  // 重力ベクトル取得
+  getGravityVector(): Vector3 | null;
+
+  // 初期姿勢取得
+  getInitialOrientation(): Quaternion | null;
 }
 ```
+
+#### ブラウザ互換性
+
+| ブラウザ | DeviceOrientation | DeviceMotion | 権限要求 |
+|----------|-------------------|--------------|----------|
+| Chrome (Android) | ✅ | ✅ | 不要 |
+| Safari (iOS 13+) | ✅ | ✅ | **必須** |
+| Firefox (Android) | ✅ | ✅ | 不要 |
+| Chrome (Desktop) | ❌ | ❌ | - |
+| Safari (Desktop) | ❌ | ❌ | - |
+
+#### Phase 1 完了基準
+
+- [ ] スマートフォンでデバイスを傾けるとThree.jsカメラが追従する
+- [ ] iOS Safari、Android Chromeで動作確認
+- [ ] 初期化プロセスが安定して完了する
+- [ ] ドリフト量が計測・可視化できる（この時点ではドリフトは許容）
 
 ---
 
@@ -120,13 +218,25 @@ class DeviceMotionTracker {
 **状態: ❌ 未着手**
 
 #### 目標
-視覚情報とIMUを組み合わせた連続的なポーズ推定
+視覚情報とIMUを組み合わせた連続的なポーズ推定、**ドリフト問題の解決**
+
+#### ⚠️ Phase 1のドリフト対策
+
+| 対策 | 説明 |
+|------|------|
+| **視覚によるドリフト補正** | 特徴点追跡結果でIMU推定を定期的にリセット |
+| **センサーフュージョン** | カルマンフィルタ/相補フィルタでIMUと視覚を統合 |
+| **キーフレーム参照** | 過去のキーフレームとのマッチングで絶対位置を補正 |
 
 #### タスク
 
 - [ ] `src/tracking/KeyframeManager.ts` の作成
   - [ ] キーフレーム選択基準の実装
   - [ ] メモリ管理（古いキーフレームの破棄）
+- [ ] `src/tracking/SensorFusion.ts` の作成
+  - [ ] 相補フィルタ実装（高周波:IMU、低周波:視覚）
+  - [ ] カルマンフィルタ実装（オプション）
+  - [ ] **IMUドリフトの視覚補正**
 - [ ] `src/FeatureDetector.ts` の拡張
   - [ ] 特徴点IDの永続化
   - [ ] 平面特異的特徴追跡
@@ -137,6 +247,23 @@ class DeviceMotionTracker {
 #### 設計
 
 ```typescript
+// src/tracking/SensorFusion.ts
+class SensorFusion {
+  private imuTracker: DeviceMotionTracker;
+  private visualTracker: FeatureDetector;
+  private complementaryAlpha: number = 0.98; // IMU重み
+
+  // IMUと視覚のポーズを融合
+  fuse(imuPose: Pose, visualPose: Pose | null): Pose;
+
+  // ドリフト補正（視覚情報で絶対位置をリセット）
+  correctDrift(visualReference: Pose): void;
+
+  // 信頼度に基づく重み調整
+  adjustWeights(imuConfidence: number, visualConfidence: number): void;
+}
+
+// src/tracking/KeyframeManager.ts
 class KeyframeManager {
   private keyframes: Keyframe[] = [];
   private planeDescriptors: Map<number, Float32Array> = new Map();
@@ -341,6 +468,7 @@ src/
 
 | リスク | 対策 |
 |--------|------|
+| **IMUドリフト** | Phase 2でVIO統合、視覚情報による定期補正 |
 | デバイスモーション許可の取得失敗 | 視覚のみのフォールバック実装 |
 | パフォーマンス劣化 | Worker分離、処理間引き |
 | 追跡精度の不安定性 | 複数アルゴリズム併用、閾値調整 |
@@ -376,4 +504,5 @@ src/
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-29 | Phase 1詳細化、専門家アドバイス反映、ドリフト対策を明記 |
 | 2025-12-29 | 実装状況の詳細調査を反映、進捗表記を追加 |
