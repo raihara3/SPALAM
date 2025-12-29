@@ -123,6 +123,11 @@ export const defaultConfig: SPALAMConfig = {
       minWeight: 0.1,
       maxTrackingFrames: 5,
     },
+    cameraIntrinsics: {
+      horizontalFov: 70,
+      focalLengthPixels: null,
+      principalPointOffset: { x: 0, y: 0 },
+    },
   },
   renderer: {
     fov: 75,

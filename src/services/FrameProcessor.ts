@@ -55,23 +55,23 @@ export class FrameProcessor {
       this.depthEstimation = null;
 
       // エラータイプ別の処理
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (
-        error.message &&
-        (error.message.includes("not supported on mobile devices") ||
-          error.message.includes("WASM depth estimation failed") ||
-          error.message.includes("Model download failed") ||
-          error.message.includes("CDN returned HTML"))
+        errorMessage.includes("not supported on mobile devices") ||
+        errorMessage.includes("WASM depth estimation failed") ||
+        errorMessage.includes("Model download failed") ||
+        errorMessage.includes("CDN returned HTML")
       ) {
         // モバイルやネットワーク問題の場合は警告レベルで出力
         console.warn(
           "Depth estimation disabled, using fallback depth calculation:",
-          error.message
+          errorMessage
         );
         // エラーを再スローしない
-      } else if (error.message && error.message.includes("timeout")) {
+      } else if (errorMessage.includes("timeout")) {
         console.warn(
           "Model loading timeout - using fallback depth calculation:",
-          error.message
+          errorMessage
         );
         // タイムアウトの場合も継続
       } else {
@@ -81,7 +81,7 @@ export class FrameProcessor {
           "SPALAM will continue without AI depth estimation, using fallback depth calculation"
         );
         // その他の予期しないエラーの場合は再スロー
-        throw new Error(`Depth estimation unavailable: ${error.message}`);
+        throw new Error(`Depth estimation unavailable: ${errorMessage}`);
       }
     }
 

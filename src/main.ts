@@ -129,46 +129,68 @@ const startSPALAM = async () => {
     console.log("SPALAM started successfully");
     hideLoading();
 
-    // モバイルデバイスでの成功メッセージ
+    // モバイルデバイスでIMUトラッキング許可ボタンを表示
+    // iOS Safariではセンサーアクセスにユーザージェスチャーが必要
     if (isMobile) {
-      const infoDiv = document.createElement("div");
-      infoDiv.style.cssText = `
+      const imuButton = document.createElement("button");
+      imuButton.style.cssText = `
         position: fixed;
         top: 20px;
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(0, 150, 0, 0.9);
+        background: rgba(0, 100, 200, 0.9);
         color: white;
-        padding: 10px 20px;
+        padding: 15px 25px;
         border-radius: 8px;
+        border: none;
         z-index: 9999;
         text-align: center;
-        font-size: 14px;
+        font-size: 16px;
+        cursor: pointer;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
       `;
-      infoDiv.innerHTML = `
-        <p>📱 モバイルモード: WASM深度推定または簡易深度計算</p>
-      `;
-      document.body.appendChild(infoDiv);
+      imuButton.textContent = "📱 タップしてARトラッキングを有効化";
+      document.body.appendChild(imuButton);
 
-      // 3秒後に非表示
-      setTimeout(() => {
-        if (infoDiv.parentNode) {
-          infoDiv.parentNode.removeChild(infoDiv);
+      imuButton.addEventListener("click", async () => {
+        imuButton.textContent = "有効化中...";
+        imuButton.style.background = "rgba(100, 100, 100, 0.9)";
+
+        console.log("Enabling IMU tracking for mobile device...");
+        const imuSuccess = await spalam.enableIMUTracking();
+
+        if (imuSuccess) {
+          console.log("IMU tracking enabled successfully");
+          spalam.setIMUDebug(true);
+          imuButton.textContent = "✓ ARトラッキング有効";
+          imuButton.style.background = "rgba(0, 150, 0, 0.9)";
+        } else {
+          console.warn("IMU tracking initialization failed");
+          imuButton.textContent = "❌ 有効化に失敗";
+          imuButton.style.background = "rgba(200, 50, 50, 0.9)";
         }
-      }, 3000);
+
+        // 2秒後にボタンを非表示
+        setTimeout(() => {
+          if (imuButton.parentNode) {
+            imuButton.parentNode.removeChild(imuButton);
+          }
+        }, 2000);
+      });
     }
   } catch (error) {
     console.error("Failed to start SPALAM:", error);
     hideLoading();
 
     // モバイルデバイス向けの追加チェック
-    if (error.message.includes("OpenCV.js")) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes("OpenCV.js")) {
       console.warn(
         "OpenCV.js loading failed. This might be due to mobile device limitations."
       );
     }
 
-    if (error.message.includes("camera")) {
+    if (errorMessage.includes("camera")) {
       console.warn("Camera access failed. Please check permissions.");
     }
   }

@@ -48,19 +48,21 @@ export class CameraController {
       console.log("Camera initialized successfully");
     } catch (error) {
       console.error("Camera initialization failed:", error);
+      const errorName = error instanceof Error ? error.name : "";
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
-      if (error.name === "NotAllowedError") {
+      if (errorName === "NotAllowedError") {
         throw new Error(
           "Camera access denied. Please allow camera permissions and reload the page."
         );
-      } else if (error.name === "NotFoundError") {
+      } else if (errorName === "NotFoundError") {
         throw new Error(
           "No camera found. Please connect a camera and reload the page."
         );
-      } else if (error.name === "NotSupportedError") {
+      } else if (errorName === "NotSupportedError") {
         throw new Error("Camera is not supported on this device.");
       } else {
-        throw new Error(`Camera initialization failed: ${error.message}`);
+        throw new Error(`Camera initialization failed: ${errorMessage}`);
       }
     }
   }

@@ -11,7 +11,10 @@ import computeConvexHull2D from "../helpers/computeConvexHull2D";
 import liftHull2DTo3D from "../helpers/liftHull2DTo3D";
 import { weightedPlaneFit2D } from "../helpers/weightedPlaneFit2D";
 import sampleDepthAtFeaturePoints from "../helpers/sampleDepthAtFeaturePoints";
-import backProjectPoints from "../helpers/backProjectPoints";
+import backProjectPoints, {
+  getCameraIntrinsics,
+  CameraIntrinsics,
+} from "../helpers/backProjectPoints";
 import { Feature } from "../types";
 
 /**
@@ -34,6 +37,8 @@ export class PlaneFittingService {
   private config: PlaneEstimationConfig;
   private fittingResults: PlaneFittingResult[] = [];
   private fittingCount: number = 0;
+  private cachedIntrinsics: CameraIntrinsics | null = null;
+  private cachedVideoSize: { width: number; height: number } | null = null;
 
   constructor(config?: Partial<PlaneEstimationConfig>) {
     this.config = {
@@ -61,6 +66,28 @@ export class PlaneFittingService {
   }
 
   /**
+   * カメラ内部パラメータを取得（キャッシュ付き）
+   */
+  private getIntrinsics(videoWidth: number, videoHeight: number): CameraIntrinsics {
+    if (
+      this.cachedIntrinsics &&
+      this.cachedVideoSize?.width === videoWidth &&
+      this.cachedVideoSize?.height === videoHeight
+    ) {
+      return this.cachedIntrinsics;
+    }
+
+    this.cachedIntrinsics = getCameraIntrinsics(
+      this.config.cameraIntrinsics,
+      videoWidth,
+      videoHeight
+    );
+    this.cachedVideoSize = { width: videoWidth, height: videoHeight };
+
+    return this.cachedIntrinsics;
+  }
+
+  /**
    * 平面フィッティングを実行
    */
   public async performFitting(
@@ -68,19 +95,21 @@ export class PlaneFittingService {
     depthMap: Float32Array | null,
     mapWidth: number,
     mapHeight: number,
-    centerFeature: Feature
+    centerFeature: Feature,
+    videoWidth?: number,
+    videoHeight?: number
   ): Promise<PlaneFittingResult | null> {
-    // パラメータの検証
     if (!featurePoints || featurePoints.length === 0) {
       console.warn("No feature points provided for plane fitting");
       return null;
     }
 
-    // mapWidth/mapHeightがゼロまたは負の場合はデフォルト値を使用
     const safeMapWidth = Math.max(mapWidth || 640, 1);
     const safeMapHeight = Math.max(mapHeight || 480, 1);
 
-    // 3D座標を計算
+    const safeVideoWidth = videoWidth || safeMapWidth;
+    const safeVideoHeight = videoHeight || safeMapHeight;
+
     const points3D = sampleDepthAtFeaturePoints({
       featurePoints,
       depthMap,
@@ -88,8 +117,12 @@ export class PlaneFittingService {
       mapHeight: safeMapHeight,
     });
 
-    // カメラ座標系に逆投影
-    const points3DBackProjected = backProjectPoints(points3D);
+    const intrinsics = this.getIntrinsics(safeVideoWidth, safeVideoHeight);
+
+    const points3DBackProjected = backProjectPoints({
+      points: points3D,
+      intrinsics,
+    });
 
     // 深度フィルタリング
     const filteredPoints3D = filterByDepth(

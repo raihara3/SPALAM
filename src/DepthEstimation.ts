@@ -1,5 +1,20 @@
 import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
 
+declare global {
+  interface Navigator {
+    gpu?: {
+      requestAdapter(): Promise<GPUAdapter | null>;
+    };
+  }
+  interface GPUAdapter {
+    features: Set<string>;
+    requestDevice(): Promise<GPUDevice | null>;
+  }
+  interface GPUDevice {
+    destroy(): void;
+  }
+}
+
 export class DepthEstimation {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
@@ -80,7 +95,8 @@ export class DepthEstimation {
           console.log("WebGPU available and tested successfully");
           return true;
         } catch (error) {
-          console.log("WebGPU test failed:", error.message);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.log("WebGPU test failed:", errorMessage);
           return false;
         }
       };
@@ -98,8 +114,8 @@ export class DepthEstimation {
       };
 
       // デバイス別設定
-      let deviceConfig: string;
-      let dtypeConfig: string;
+      let deviceConfig: "wasm" | "webgpu";
+      let dtypeConfig: "fp32" | "fp16";
 
       if (isMobile) {
         // モバイル: WASMのみ、fp32固定
@@ -132,17 +148,9 @@ export class DepthEstimation {
       const modelLoadPromise = AutoModel.from_pretrained(model_id, {
         device: deviceConfig,
         dtype: dtypeConfig,
-        // モバイルでのメモリ制約を考慮
-        ...(isMobile && {
-          cache_dir: false, // キャッシュを無効化してメモリ節約
-        }),
       });
 
-      const processorLoadPromise = AutoProcessor.from_pretrained(model_id, {
-        ...(isMobile && {
-          cache_dir: false,
-        }),
-      });
+      const processorLoadPromise = AutoProcessor.from_pretrained(model_id);
 
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(
@@ -166,37 +174,38 @@ export class DepthEstimation {
       );
     } catch (err) {
       console.error("Depth estimation initialization failed:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
 
       // エラーの詳細分析
-      if (err.message && err.message.includes("<!DOCTYPE")) {
+      if (errorMessage.includes("<!DOCTYPE")) {
         console.error("Network error: Received HTML instead of model data");
         throw new Error(
           "Model download failed: CDN returned HTML error page. This may be due to network restrictions or temporary service issues."
         );
       }
 
-      if (err.message && err.message.includes("timeout")) {
+      if (errorMessage.includes("timeout")) {
         console.error("Model loading timeout");
         throw new Error(
           "Model download timeout: The model files are too large or network is too slow. Please try again with a better internet connection."
         );
       }
 
-      if (err.message && err.message.includes("fetch")) {
+      if (errorMessage.includes("fetch")) {
         console.error("Network fetch error:", err);
         throw new Error(
           "Model download failed: Unable to download model files. Please check your internet connection and firewall settings."
         );
       }
 
-      if (err.message && err.message.includes("WebGPU")) {
+      if (errorMessage.includes("WebGPU")) {
         console.error("WebGPU error:", err);
         throw new Error(
           "WebGPU initialization failed. Your device may not support WebGPU."
         );
       }
 
-      if (err.message && err.message.includes("WASM")) {
+      if (errorMessage.includes("WASM")) {
         console.error("WASM backend error:", err);
         if (isMobile) {
           throw new Error(
@@ -210,7 +219,7 @@ export class DepthEstimation {
       }
 
       // 一般的なエラーハンドリング
-      throw new Error(`Depth estimation setup failed: ${err.message}`);
+      throw new Error(`Depth estimation setup failed: ${errorMessage}`);
     }
   }
 
