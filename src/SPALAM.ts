@@ -14,6 +14,7 @@ import {
   CameraInfo,
   SPALAMError,
   SPALAMErrorType,
+  Feature,
 } from "./types";
 
 // modules
@@ -35,6 +36,17 @@ import {
 import { CameraController } from "./utils/CameraController";
 import { ServiceContainer } from "./utils/ServiceContainer";
 import { IServiceProvider } from "./interfaces/IServiceProvider";
+
+// tracking
+import {
+  DeviceMotionTracker,
+  ComplementaryFilter,
+  DriftCorrector,
+  DistanceTracker,
+  FeatureAnchor,
+  GravityAligner,
+} from "./tracking";
+import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 
 // config
 import { SPALAMConfig } from "./config/types";
@@ -330,14 +342,27 @@ export class SPALAM implements IServiceProvider {
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
 
-  /** 前フレームの中心特徴点位置（カメラ移動追跡用） */
-  private previousCenterFeature: { x: number; y: number } | null = null;
+  /** デバイスモーショントラッカー */
+  private deviceMotionTracker: DeviceMotionTracker | null = null;
+  /** IMUトラッキングが有効かどうか */
+  private imuTrackingEnabled: boolean = false;
+  /** IMUデバッグ情報を表示するかどうか */
+  private showIMUDebug: boolean = false;
 
-  /** 前フレームの特徴点数（Z軸移動検出用） */
-  private previousFeatureCount: number = 0;
+  /** 相補フィルタ（Phase 2: Visual-Inertial Fusion） */
+  private complementaryFilter: ComplementaryFilter | null = null;
+  /** ドリフト補正器（Phase 2: Visual-Inertial Fusion） */
+  private driftCorrector: DriftCorrector | null = null;
 
-  /** 前フレームの特徴点平均距離（Z軸移動検出用） */
-  private previousAverageDistance: number = 0;
+  /** 距離トラッカー（Phase 2.5: 距離追跡とスケール更新） */
+  private distanceTracker: DistanceTracker | null = null;
+  /** 特徴点アンカー（Phase 2.5: 特徴点固定化） */
+  private featureAnchor: FeatureAnchor | null = null;
+  /** 重力アライナー（Phase 2.5: 平面角度精度向上） */
+  private gravityAligner: GravityAligner | null = null;
+  /** 初期平面スケール */
+  private initialPlaneScale: number = 1.0;
+
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -413,7 +438,6 @@ export class SPALAM implements IServiceProvider {
           this.video = cameraController.getVideo();
         }
         this.video.style.display = "none";
-        console.debug("Video element:", this.video);
 
         this.arRenderer = new ARRenderer({
           width: this.video.width,
@@ -453,7 +477,6 @@ export class SPALAM implements IServiceProvider {
 
       const initializeApp = async () => {
         try {
-          console.log("OpenCV.js initialized:", cv.getBuildInformation());
           await setup();
           this.processPlaneDetection();
 
@@ -483,11 +506,10 @@ export class SPALAM implements IServiceProvider {
       }
 
       // OpenCV.jsの読み込み完了を待機
-      let timeoutId: NodeJS.Timeout;
       const timeout = setTimeout(() => {
         reject(
           new SPALAMError(
-            SPALAMErrorType.INITIALIZATION_ERROR,
+            SPALAMErrorType.OPENCV_INIT_FAILED,
             "OpenCV.js loading timeout"
           )
         );
@@ -503,7 +525,7 @@ export class SPALAM implements IServiceProvider {
         clearTimeout(timeout);
         reject(
           new SPALAMError(
-            SPALAMErrorType.INITIALIZATION_ERROR,
+            SPALAMErrorType.OPENCV_INIT_FAILED,
             "OpenCV.js is not available"
           )
         );
@@ -553,60 +575,33 @@ export class SPALAM implements IServiceProvider {
    * メッシュの位置と回転を調整する
    * @param group - Three.jsグループ
    * @param P0 - 平面の原点（カメラ座標系）
-   * @param centerCS - 中心点（カメラ座標系）
    * @param uVecCS - U軸ベクトル（カメラ座標系）
    * @param vVecCS - V軸ベクトル（カメラ座標系）
    * @param normalCS - 法線ベクトル（カメラ座標系）
-   * @param midU - U軸中央座標
-   * @param midV - V軸中央座標
-   * @param useCenter - 中心点を使用するか
    */
   private adjustMeshTransform(
     group: THREE.Group,
-    P0: Point3D, // in camera-space
-    centerCS: THREE.Vector3, // in camera-space
-    uVecCS: THREE.Vector3, // in camera-space
-    vVecCS: THREE.Vector3, // in camera-space
-    normalCS: THREE.Vector3, // in camera-space
-    midU: number,
-    midV: number,
-    useCenter: boolean = false
+    P0: Point3D,
+    uVecCS: THREE.Vector3,
+    vVecCS: THREE.Vector3,
+    normalCS: THREE.Vector3
   ) {
     const camera = this.arRenderer!.getCamera();
 
-    // 1) カメラ空間の平面中心を求める
-    const planeCenterCS = new THREE.Vector3()
-      .copy(P0)
-      .add(uVecCS.clone().multiplyScalar(midU))
-      .add(vVecCS.clone().multiplyScalar(midV));
-
-    // 2) カメラ空間→ワールド空間に変換（カメラ位置はリセットしない）
-    const copyCamera = camera.clone();
-
-    // 3) ワールド空間の位置をセット
-    // P0は既に中心特徴点の位置なので、それをワールド座標に変換
-    const p0WS = copyCamera.localToWorld(new THREE.Vector3(P0.x, P0.y, P0.z));
+    // Three.jsの座標系: -Zがカメラの前方なので、深度値を負にする
+    const p0WS = camera.localToWorld(new THREE.Vector3(P0.x, P0.y, -P0.z));
     group.position.copy(p0WS);
 
-    // x座標とy座標を0に固定（平面追跡アプローチ）
-    group.position.x = 0;
-    group.position.y = 0;
-
-    // 4) 平面の基底ベクトルはカメラ座標系のまま使用（カメラの回転に追従させない）
     const worldU = uVecCS.clone().normalize();
     const worldV = vVecCS.clone().normalize();
     const worldN = normalCS.clone().normalize();
 
-    // 5) 直交基底から回転行列を作成
     const basis = new THREE.Matrix4().makeBasis(worldU, worldV, worldN);
-
-    // 6) x軸にプラス90度回転を追加
     const rotationX = new THREE.Matrix4().makeRotationX(
       THREE.MathUtils.degToRad(90)
     );
     basis.multiply(rotationX);
 
-    // 7) メッシュに回転を適用
     group.setRotationFromMatrix(basis);
   }
 
@@ -630,9 +625,7 @@ export class SPALAM implements IServiceProvider {
 
       // 深度マップが利用できない場合の警告（モバイル端末など）
       if (!frameResult.depthMap) {
-        console.log(
-          "Processing frame without AI depth estimation - using fallback depth calculation"
-        );
+        // フォールバック深度計算を使用
       }
 
       // 平面フィッティングを実行
@@ -641,7 +634,9 @@ export class SPALAM implements IServiceProvider {
         frameResult.depthMap,
         this.frameProcessor.getCanvasWidth(),
         this.frameProcessor.getCanvasHeight(),
-        frameResult.centerFeature
+        frameResult.centerFeature,
+        this.video?.videoWidth,
+        this.video?.videoHeight
       );
 
       // フィッティングが完了したかチェック
@@ -673,12 +668,6 @@ export class SPALAM implements IServiceProvider {
           };
           this.emit("plane:detected", planeData);
         }
-      } else {
-        // 進捗をログ
-        const progress = this.planeFittingService.getProgress();
-        console.log(
-          `フィッティング完了: ${progress.current}/${progress.total}`
-        );
       }
     }, 100); // 100msごとに処理
   }
@@ -703,8 +692,6 @@ export class SPALAM implements IServiceProvider {
       maxV = Math.max(...vs);
     const planeWidth = maxU - minU;
     const planeHeight = maxV - minV;
-    const midU = (minU + maxU) / 2;
-    const midV = (minV + maxV) / 2;
 
     // ジオメトリの生成
     const scene = this.arRenderer!.getScene();
@@ -732,179 +719,191 @@ export class SPALAM implements IServiceProvider {
       planeHeight
     );
     group.add(planeMesh);
+
+    // 6面異なる色の立方体を追加（平面サイズの7割）
+    const cubeSize = Math.min(planeWidth, planeHeight) * 0.7;
+    const cubeMaterials = [
+      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 }), // right: red
+      new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.8 }), // left: green
+      new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.8 }), // top: blue
+      new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }), // bottom: yellow
+      new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.8 }), // front: magenta
+      new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }), // back: cyan
+    ];
+    const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+    const cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterials);
+    cubeMesh.position.set(0, 0, cubeSize / 2);
+    group.add(cubeMesh);
+
     scene.add(group);
 
     // 位置と回転の調整
-    this.adjustMeshTransform(
-      group,
-      P0,
-      center,
-      uVec,
-      vVec,
-      normal,
-      midU,
-      midV,
-      true
-    );
+    this.adjustMeshTransform(group, P0, uVec, vVec, normal);
 
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
-    console.log("平面配置完了:", group.position);
-    console.log("カメラの位置:", this.arRenderer?.getCamera().position);
-    this.arRenderer?.setCameraPosition(0, 0, group.position.z * 2);
+    this.arRenderer?.setCameraPosition(0, 0, 0);
+
+    // Phase 2.5: トラッキング品質改善機能を初期化
+    this.initializePhase25Tracking(result);
   }
 
   /**
-   * 特徴点間の平均距離を計算（Z軸移動検出用）
+   * Phase 2.5 トラッキング機能の初期化
    */
-  private calculateAverageFeatureDistance(
-    features: any[],
-    centerFeature: Feature
-  ): number {
-    if (features.length < 2) return 0;
+  private initializePhase25Tracking(result: PlaneFittingResult): void {
+    // 距離トラッカーを初期化（IMUがあれば静止検出に利用）
+    this.distanceTracker = new DistanceTracker({
+      minTrackedFrames: 20,
+      maxPairs: 15,
+      minPairDistance: 80,
+      deviceMotionTracker: this.deviceMotionTracker ?? undefined,
+      stationaryAccelerationThreshold: 0.3,
+      stationaryAngularVelocityThreshold: 5.0,
+    });
+    this.distanceTracker.setInitialDepth(Math.abs(result.P0.z));
+    this.initialPlaneScale = 1.0;
 
-    let totalDistance = 0;
-    let count = 0;
+    // 特徴点アンカーを初期化
+    this.featureAnchor = new FeatureAnchor({
+      maxReprojectionError: 10,
+      moderateReprojectionError: 5,
+      minTrackingCountForAnchor: 10,
+      maxAnchors: 50,
+      descriptorMatchInterval: 30,
+    });
 
-    for (const feature of features) {
-      const dx = feature.x - centerFeature.x;
-      const dy = feature.y - centerFeature.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      totalDistance += distance;
-      count++;
-    }
+    // 重力アライナーを初期化
+    this.gravityAligner = new GravityAligner({
+      horizontalThreshold: 15,
+      verticalThreshold: 15,
+      gravitySmoothingAlpha: 0.1,
+      normalSmoothingAlpha: 0.2,
+      forceHorizontalAlignment: true,
+      maxCorrectionAnglePerFrame: 5,
+    });
 
-    return count > 0 ? totalDistance / count : 0;
+    console.log("Phase 2.5 tracking initialized");
   }
 
   /**
-   * カメラの移動を追跡し、Three.jsカメラの位置を更新
+   * 複数の安定特徴点から重み付き重心を計算
+   *
+   * @param features 特徴点リスト
+   * @param minTrackingCount 最小追跡フレーム数
+   * @returns 重み付き重心の正規化座標（-1 to 1）、または null
    */
-  private updateCameraPosition(centerFeature: Feature): void {
-    const camera = this.arRenderer!.getCamera();
-    const features = this.frameProcessor.getFeatures() || [];
-
-    // 前フレームの特徴点位置がない場合は初期化
-    if (!this.previousCenterFeature) {
-      this.previousCenterFeature = { x: centerFeature.x, y: centerFeature.y };
-      this.previousFeatureCount = features.length;
-      this.previousAverageDistance = this.calculateAverageFeatureDistance(
-        features,
-        centerFeature
-      );
-      console.log(
-        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
-      );
-      return;
-    }
-
-    // X, Y軸の移動量を計算（逆方向に修正）
-    const deltaX = -(centerFeature.x - this.previousCenterFeature.x);
-    const deltaY = -(centerFeature.y - this.previousCenterFeature.y);
-
-    // Z軸の移動量を特徴点の平均距離変化から推定
-    const currentAverageDistance = this.calculateAverageFeatureDistance(
-      features,
-      centerFeature
-    );
-    let deltaZ = 0;
-
-    if (this.previousAverageDistance > 0 && currentAverageDistance > 0) {
-      // 特徴点間距離の変化率からZ軸移動を推定
-      // 距離が減少 = カメラが遠ざかる（Z軸正方向）
-      // 距離が増加 = カメラが近づく（Z軸負方向）
-      const distanceRatio =
-        currentAverageDistance / this.previousAverageDistance;
-      deltaZ = -(distanceRatio - 1.0) * 2.0; // スケール調整（逆方向に修正）
-    }
-
-    // 移動量がほとんどない場合はスキップ（ノイズ除去）
-    const xyThreshold = 2.0; // ピクセル単位
-    const zThreshold = 0.05; // Z軸の閾値
-
-    const hasXYMovement =
-      Math.abs(deltaX) >= xyThreshold || Math.abs(deltaY) >= xyThreshold;
-    const hasZMovement = Math.abs(deltaZ) >= zThreshold;
-
-    if (!hasXYMovement && !hasZMovement) {
-      console.log(
-        `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
-      );
-      return;
-    }
-
-    // 画面サイズで正規化（X, Y軸）
+  private computeWeightedCentroid(
+    features: Feature[],
+    minTrackingCount: number = 5
+  ): { x: number; y: number } | null {
     const width = this.frameProcessor.getCanvasWidth();
     const height = this.frameProcessor.getCanvasHeight();
-    const normalizedDeltaX = deltaX / width;
-    const normalizedDeltaY = deltaY / height; // Y軸反転を削除（既に逆方向計算済み）
 
-    // 移動距離をカメラの位置に反映
-    const movementScale = 1.0;
-    const zMovementScale = 0.5; // Z軸の感度調整
-
-    if (hasXYMovement) {
-      camera.position.x += normalizedDeltaX * movementScale;
-      camera.position.y += normalizedDeltaY * movementScale;
-    }
-
-    if (hasZMovement) {
-      camera.position.z += deltaZ * zMovementScale;
-    }
-
-    // 前フレームの値を更新
-    this.previousCenterFeature.x = centerFeature.x;
-    this.previousCenterFeature.y = centerFeature.y;
-    this.previousFeatureCount = features.length;
-    this.previousAverageDistance = currentAverageDistance;
-
-    // 毎フレームカメラ位置をコンソール出力
-    console.log(
-      `カメラ位置: x=${camera.position.x.toFixed(3)}, y=${camera.position.y.toFixed(3)}, z=${camera.position.z.toFixed(3)}`
+    // 安定した特徴点をフィルタリング
+    const stableFeatures = features.filter(
+      (f) => f.trackingCount >= minTrackingCount
     );
-    console.log("平面の角度:", this.stateManager.getPlaneGroup()?.rotation);
+
+    if (stableFeatures.length === 0) {
+      return null;
+    }
+
+    // 追跡フレーム数で重み付けした重心を計算
+    let weightedX = 0;
+    let weightedY = 0;
+    let totalWeight = 0;
+
+    for (const feature of stableFeatures) {
+      const weight = feature.trackingCount;
+      weightedX += feature.x * weight;
+      weightedY += feature.y * weight;
+      totalWeight += weight;
+    }
+
+    if (totalWeight === 0) {
+      return null;
+    }
+
+    // 重心の正規化座標 (-1 to 1)
+    const centroidX = weightedX / totalWeight;
+    const centroidY = weightedY / totalWeight;
+
+    return {
+      x: (centroidX / width - 0.5) * 2,
+      y: -(centroidY / height - 0.5) * 2,
+    };
   }
 
   /**
-   * 平面の位置を中心特徴点に基づいて更新
+   * 平面位置を複数の安定特徴点に基づいて更新
+   * 重み付き重心を使用して個々の特徴点のノイズを平均化
    */
-  private updatePlanePosition(centerFeature: Feature): void {
+  private updateCameraPosition(features: Feature[]): void {
+    const camera = this.arRenderer!.getCamera();
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
-    if (!planeGroup || !planeResult) return;
+    if (!planeResult || !planeGroup) return;
 
-    // 簡易的な深度計算（平面検出時の深度を使用）
-    const estimatedZ = planeResult.P0.z;
+    // 複数特徴点の重み付き重心を計算
+    const centroid = this.computeWeightedCentroid(features);
+    if (!centroid) return;
 
-    // 特徴点の正規化座標を計算
-    const width = this.frameProcessor.getCanvasWidth();
-    const height = this.frameProcessor.getCanvasHeight();
-    const normalizedX = (centerFeature.x / width - 0.5) * 2;
-    const normalizedY = -(centerFeature.y / height - 0.5) * 2; // Y軸を反転
+    // 深度（初期検出時の値を使用）
+    const depth = Math.abs(planeResult.P0.z);
 
-    // カメラのアスペクト比とFOVを考慮
+    // カメラのFoVから3D位置を計算
+    const fovRadians = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fovRadians / 2);
+
+    // カメラ座標系での位置
+    const x = centroid.x * tanHalfFov * camera.aspect * depth;
+    const y = centroid.y * tanHalfFov * depth;
+    const z = -depth;
+
+    // ワールド座標に変換（カメラは原点固定）
+    const targetPosition = new THREE.Vector3(x, y, z);
+
+    // スムーズに追従
+    planeGroup.position.lerp(targetPosition, 0.5);
+  }
+
+  /**
+   * IMU有効時: 視覚情報から平面のワールド位置を更新
+   *
+   * 複数の安定特徴点の重心を使って平面のワールド座標を補正する。
+   * カメラはIMUで回転するが、平面は特徴点群の重心に正確に配置される。
+   */
+  private updatePlaneWorldPosition(features: Feature[]): void {
     const camera = this.arRenderer!.getCamera();
-    const aspect = camera.aspect;
-    const fov = (camera.fov * Math.PI) / 180;
-    const tanHalfFov = Math.tan(fov / 2);
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
 
-    // 3D位置を計算（カメラ座標系）
-    const x = normalizedX * tanHalfFov * aspect * estimatedZ;
-    const y = normalizedY * tanHalfFov * estimatedZ;
+    if (!planeResult || !planeGroup) return;
 
-    // カメラ座標系からワールド座標系への変換
-    const copyCamera = camera.clone();
-    copyCamera.position.z = 0;
+    // 複数特徴点の重み付き重心を計算
+    const centroid = this.computeWeightedCentroid(features);
+    if (!centroid) return;
 
-    const newPositionWS = copyCamera.localToWorld(
-      new THREE.Vector3(x, y, estimatedZ)
-    );
+    // 深度（初期検出時の値を使用）
+    const depth = Math.abs(planeResult.P0.z);
 
-    // 位置の変化が大きすぎる場合はスムージング
-    const smoothingFactor = 0.7; // 0.0-1.0の範囲で、値が小さいほどスムーズ
+    // カメラのFoVから3D位置を計算（カメラローカル座標系）
+    const fovRadians = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fovRadians / 2);
 
-    planeGroup.position.lerp(newPositionWS, smoothingFactor);
+    // カメラ座標系での位置
+    const localX = centroid.x * tanHalfFov * camera.aspect * depth;
+    const localY = centroid.y * tanHalfFov * depth;
+    const localZ = -depth;
+
+    // カメラローカル座標をワールド座標に変換
+    const localPosition = new THREE.Vector3(localX, localY, localZ);
+    const worldPosition = localPosition.applyQuaternion(camera.quaternion);
+
+    // スムーズに追従
+    planeGroup.position.lerp(worldPosition, 0.5);
   }
 
   /**
@@ -912,6 +911,11 @@ export class SPALAM implements IServiceProvider {
    * ARレンダリングを実行
    */
   public render(): void {
+    // IMUトラッキングが有効な場合、カメラの姿勢を更新
+    if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
+      this.updateCameraFromIMU();
+    }
+
     // 常に特徴点検出は実行（カメラ映像の更新のため）
     if (this.frameProcessor.isReady()) {
       this.frameProcessor.renderFeatures();
@@ -942,14 +946,25 @@ export class SPALAM implements IServiceProvider {
       };
       this.emit("frame:processed", frameData);
 
-      // 中心特徴点が存在する場合はカメラ位置を更新
-      if (centerFeature) {
-        this.updateCameraPosition(centerFeature);
+      // Phase 2: ドリフト補正器に特徴点情報を更新（IMU有効時も継続）
+      if (this.driftCorrector && features.length > 0) {
+        this.updateDriftCorrector(features);
       }
 
-      // 平面が検出済みで、中心特徴点が存在する場合は位置を更新
-      if (this.stateManager.isPlaneDetected() && centerFeature) {
-        this.updatePlanePosition(centerFeature);
+      // Phase 2.5: トラッキング品質改善機能を更新
+      if (this.stateManager.isPlaneDetected() && features.length > 0) {
+        this.updatePhase25Tracking(features);
+      }
+
+      // 平面が検出済みで、特徴点が存在する場合
+      if (this.stateManager.isPlaneDetected() && features.length > 0) {
+        if (this.imuTrackingEnabled) {
+          // IMU有効時: 視覚情報で平面のワールド位置を補正
+          this.updatePlaneWorldPosition(features);
+        } else {
+          // IMU無効時: 従来通りカメラ位置を更新（平面が特徴点に追従）
+          this.updateCameraPosition(features);
+        }
       }
     }
 
@@ -957,6 +972,152 @@ export class SPALAM implements IServiceProvider {
       this.arRenderer.render();
     }
     this.animationFrameId = requestAnimationFrame(() => this.render());
+  }
+
+  /**
+   * IMUからカメラの姿勢を更新（Phase 2: 相補フィルタ対応）
+   */
+  private updateCameraFromIMU(): void {
+    if (!this.deviceMotionTracker || !this.arRenderer) return;
+
+    const imuOrientation = this.deviceMotionTracker.getOrientation();
+    if (!imuOrientation) return;
+
+    const camera = this.arRenderer.getCamera();
+
+    // Phase 2: 相補フィルタで視覚情報と融合
+    if (this.complementaryFilter && this.driftCorrector) {
+      const visualConfidence = this.driftCorrector.getVisualConfidence();
+
+      // 相補フィルタで融合（視覚姿勢は現時点ではnull - 将来的に視覚からの姿勢推定を追加）
+      const fusedOrientation = this.complementaryFilter.fuse(
+        imuOrientation,
+        null,
+        visualConfidence
+      );
+
+      camera.quaternion.copy(fusedOrientation);
+
+      // ドリフト補正チェック
+      if (this.driftCorrector.shouldCorrect()) {
+        const visualReference = this.driftCorrector.computeVisualReference();
+        this.driftCorrector.correctDrift(fusedOrientation, visualReference);
+      }
+    } else {
+      // フォールバック: 相補フィルタなしの場合はIMUのみ使用
+      camera.quaternion.copy(imuOrientation);
+    }
+
+    // デバッグ: IMU姿勢更新を確認
+    if (this.showIMUDebug) {
+      const q = camera.quaternion;
+      const stats = this.driftCorrector?.getStatistics();
+      console.log(
+        `IMU: q(${q.x.toFixed(3)}, ${q.y.toFixed(3)}, ${q.z.toFixed(3)}, ${q.w.toFixed(3)}) ` +
+        `stable:${stats?.stableFeatures ?? 0} conf:${stats?.averageConfidence.toFixed(2) ?? 0}`
+      );
+    }
+  }
+
+  /**
+   * ドリフト補正器に特徴点情報を更新
+   */
+  private updateDriftCorrector(features: Feature[]): void {
+    if (!this.driftCorrector) return;
+
+    // 特徴点の3D位置を取得（深度情報がある場合）
+    const depth3DPoints = new Map<string, THREE.Vector3>();
+
+    // フレームプロセッサから深度マップを取得して3D位置を計算
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (planeGroup) {
+      // 平面の中心位置を基準として特徴点の3D位置を推定
+      const planeCenter = new THREE.Vector3();
+      planeGroup.getWorldPosition(planeCenter);
+
+      for (const feature of features) {
+        // 簡易的な3D位置推定（平面上にあると仮定）
+        const normalizedX = (feature.x / 640 - 0.5) * 2;
+        const normalizedY = (feature.y / 480 - 0.5) * 2;
+
+        const position3D = new THREE.Vector3(
+          planeCenter.x + normalizedX * 0.5,
+          planeCenter.y - normalizedY * 0.5,
+          planeCenter.z
+        );
+
+        depth3DPoints.set(feature.id, position3D);
+      }
+    }
+
+    this.driftCorrector.updateFeatures(features, depth3DPoints);
+  }
+
+  /**
+   * Phase 2.5 トラッキング機能を更新
+   */
+  private updatePhase25Tracking(features: Feature[]): void {
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
+
+    if (!planeGroup || !planeResult) return;
+
+    // 1. 距離トラッカーを更新してスケールを計算
+    if (this.distanceTracker) {
+      const scale = this.distanceTracker.update(features);
+      const targetScale = scale * this.initialPlaneScale;
+      planeGroup.scale.set(targetScale, targetScale, targetScale);
+    }
+
+    // 2. 特徴点アンカーを更新
+    if (this.featureAnchor) {
+      const get3DPosition = (feature: Feature): THREE.Vector3 | null => {
+        // 平面上の3D位置を推定
+        const planeCenter = new THREE.Vector3();
+        planeGroup.getWorldPosition(planeCenter);
+
+        const width = this.frameProcessor.getCanvasWidth();
+        const height = this.frameProcessor.getCanvasHeight();
+
+        const normalizedX = (feature.x / width - 0.5) * 2;
+        const normalizedY = -(feature.y / height - 0.5) * 2;
+
+        return new THREE.Vector3(
+          planeCenter.x + normalizedX * 0.5,
+          planeCenter.y + normalizedY * 0.5,
+          planeCenter.z
+        );
+      };
+
+      this.featureAnchor.updateAnchors(features, get3DPosition);
+    }
+
+    // 3. 重力アライナーを更新（IMU有効時のみ）
+    if (this.gravityAligner && this.deviceMotionTracker?.isTracking()) {
+      const gravity = this.deviceMotionTracker.getGravityVector();
+      if (gravity) {
+        // IMUからの重力ベクトルを更新
+        this.gravityAligner.updateGravity(gravity);
+
+        // 平面の法線を重力に合わせて補正
+        const planeNormal = new THREE.Vector3().copy(planeResult.normal);
+        const alignment = this.gravityAligner.alignPlaneNormal(planeNormal);
+
+        // 補正済みの法線から目標のquaternionを計算
+        const correctedNormal = alignment.correctedNormal;
+
+        // PlaneGeometryはデフォルトでZ+方向を向いているので、
+        // その法線を補正済み法線に向けるquaternionを計算
+        const defaultNormal = new THREE.Vector3(0, 0, 1);
+        const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
+          defaultNormal,
+          correctedNormal
+        );
+
+        // 現在のquaternionから目標に向かってslerp
+        planeGroup.quaternion.slerp(targetQuaternion, 0.1);
+      }
+    }
   }
 
   /**
@@ -1047,10 +1208,7 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
-    this.previousCenterFeature = null; // カメラ移動追跡もリセット
-    this.previousFeatureCount = 0;
-    this.previousAverageDistance = 0;
-    return this; // チェーンメソッド用
+    return this;
   }
 
   /**
@@ -1078,6 +1236,36 @@ export class SPALAM implements IServiceProvider {
 
     // イベントリスナーをクリア
     this.eventListeners.clear();
+
+    // デバイスモーショントラッカーを解放
+    if (this.deviceMotionTracker) {
+      this.deviceMotionTracker.dispose();
+      this.deviceMotionTracker = null;
+    }
+
+    // Phase 2: 相補フィルタとドリフト補正器を解放
+    if (this.complementaryFilter) {
+      this.complementaryFilter.dispose();
+      this.complementaryFilter = null;
+    }
+    if (this.driftCorrector) {
+      this.driftCorrector.dispose();
+      this.driftCorrector = null;
+    }
+
+    // Phase 2.5: トラッキング品質改善機能を解放
+    if (this.distanceTracker) {
+      this.distanceTracker.dispose();
+      this.distanceTracker = null;
+    }
+    if (this.featureAnchor) {
+      this.featureAnchor.dispose();
+      this.featureAnchor = null;
+    }
+    if (this.gravityAligner) {
+      this.gravityAligner.dispose();
+      this.gravityAligner = null;
+    }
 
     // ARレンダラーを解放
     if (this.arRenderer) {
@@ -1338,6 +1526,217 @@ export class SPALAM implements IServiceProvider {
       this.render();
     }
     return this;
+  }
+
+  /**
+   * IMUトラッキングを有効化
+   *
+   * デバイスのIMU（加速度計・ジャイロスコープ）を使用して
+   * カメラの姿勢をリアルタイムで更新します。
+   *
+   * @returns Promise<boolean> - 初期化成功時はtrue
+   *
+   * @example
+   * ```typescript
+   * const success = await spalam.enableIMUTracking();
+   * if (success) {
+   *   console.log('IMUトラッキングが有効になりました');
+   * }
+   * ```
+   */
+  public async enableIMUTracking(): Promise<boolean> {
+    if (this.deviceMotionTracker) {
+      this.imuTrackingEnabled = true;
+      return true;
+    }
+
+    this.deviceMotionTracker = new DeviceMotionTracker();
+
+    // Phase 2: 相補フィルタとドリフト補正器を初期化
+    this.complementaryFilter = new ComplementaryFilter({
+      alpha: 0.98,
+      minVisualConfidence: 0.3,
+      smoothingFactor: 0.1,
+    });
+
+    this.driftCorrector = new DriftCorrector({
+      resetIntervalMs: 1000,
+      minTrackedFrames: 10,
+      maxStableFeatures: 50,
+    });
+
+    this.deviceMotionTracker.addListener((event: DeviceMotionTrackerEvent) => {
+      if (event.type === "stateChange") {
+        console.log("IMU state changed:", event.state);
+        this.emit("imu:stateChange" as any, event);
+      } else if (event.type === "orientationUpdate") {
+        // 姿勢データを受信したらトラッキングを有効化
+        if (!this.imuTrackingEnabled) {
+          this.imuTrackingEnabled = true;
+          // 平面の回転をIMU座標系に変換（一度だけ）
+          this.adjustPlaneRotationForIMU();
+          console.log("IMU tracking enabled (orientation data received)");
+        }
+      } else if (event.type === "error") {
+        console.error("IMU tracking error:", event.error);
+      }
+    });
+
+    const initialized = await this.deviceMotionTracker.initialize();
+
+    if (initialized) {
+      // キャリブレーション完了を待たずに、権限が得られたらすぐに有効化
+      // orientationUpdateイベントで最終的に有効化される
+      console.log("IMU permission granted, waiting for orientation data...");
+
+      // 短いタイムアウトで最初のイベントを待つ
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      if (this.imuTrackingEnabled) {
+        console.log("IMU tracking enabled with Visual-Inertial Fusion");
+        return true;
+      }
+
+      // まだ有効化されていなくても、権限があれば成功とみなす
+      this.imuTrackingEnabled = true;
+      console.log("IMU tracking enabled (permission granted)");
+      return true;
+    }
+
+    console.warn("IMU tracking initialization failed");
+    return false;
+  }
+
+  /**
+   * IMU有効化時に平面の回転を調整
+   *
+   * 平面は検出時にカメラ回転=identityを前提に設定されている。
+   * IMU有効化時に実際のカメラ回転（IMU姿勢）を適用して、
+   * 平面が画面上で同じ向きに見えるように調整する。
+   */
+  private adjustPlaneRotationForIMU(): void {
+    if (!this.deviceMotionTracker || !this.arRenderer) return;
+
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (!planeGroup) return;
+
+    const imuOrientation = this.deviceMotionTracker.getOrientation();
+    if (!imuOrientation) return;
+
+    // 平面の回転をIMU座標系に変換
+    // 元の回転: R_plane（カメラがidentityの時に設定）
+    // IMU回転: R_imu
+    // 新しい回転: R_imu * R_plane
+    // これにより、IMUで回転したカメラから見た時に同じ向きに見える
+    const currentQuaternion = planeGroup.quaternion.clone();
+    const newQuaternion = imuOrientation.clone().multiply(currentQuaternion);
+
+    planeGroup.quaternion.copy(newQuaternion);
+
+    console.log("Plane rotation adjusted for IMU");
+  }
+
+  /**
+   * IMUトラッキングを無効化
+   *
+   * @returns SPALAMインスタンス（メソッドチェーン用）
+   */
+  public disableIMUTracking(): SPALAM {
+    this.imuTrackingEnabled = false;
+    return this;
+  }
+
+  /**
+   * IMUトラッキングが有効かどうかを取得
+   */
+  public isIMUTrackingEnabled(): boolean {
+    return this.imuTrackingEnabled;
+  }
+
+  /**
+   * IMUトラッキングが動作中かどうかを取得
+   */
+  public isIMUTracking(): boolean {
+    return (
+      this.imuTrackingEnabled &&
+      this.deviceMotionTracker?.isTracking() === true
+    );
+  }
+
+  /**
+   * デバイスモーショントラッカーを取得
+   */
+  public getDeviceMotionTracker(): DeviceMotionTracker | null {
+    return this.deviceMotionTracker;
+  }
+
+  /**
+   * IMUデバッグ表示を有効化/無効化
+   */
+  public setIMUDebug(enabled: boolean): SPALAM {
+    this.showIMUDebug = enabled;
+    return this;
+  }
+
+  /**
+   * IMU初期化の進捗を取得
+   */
+  public getIMUInitializationProgress(): number {
+    if (!this.deviceMotionTracker) return 0;
+    return this.deviceMotionTracker.getIMUInitializer().getProgress();
+  }
+
+  /**
+   * ドリフト統計を取得
+   */
+  public getIMUDriftStatistics(): ReturnType<
+    DeviceMotionTracker["getDriftStatistics"]
+  > | null {
+    if (!this.deviceMotionTracker) return null;
+    return this.deviceMotionTracker.getDriftStatistics();
+  }
+
+  /**
+   * ドリフト計測をリセット
+   */
+  public resetIMUDriftMeasurement(): SPALAM {
+    this.deviceMotionTracker?.resetDriftMeasurement();
+    return this;
+  }
+
+  /**
+   * Phase 2.5: トラッキング品質統計を取得
+   *
+   * 距離追跡、特徴点アンカー、重力アライメントの統計情報を返す
+   */
+  public getTrackingQualityStatistics(): {
+    distanceTracker: ReturnType<DistanceTracker["getStatistics"]> | null;
+    featureAnchor: ReturnType<FeatureAnchor["getStatistics"]> | null;
+    gravityAligner: ReturnType<GravityAligner["getStatistics"]> | null;
+  } {
+    return {
+      distanceTracker: this.distanceTracker?.getStatistics() ?? null,
+      featureAnchor: this.featureAnchor?.getStatistics() ?? null,
+      gravityAligner: this.gravityAligner?.getStatistics() ?? null,
+    };
+  }
+
+  /**
+   * Phase 2.5: 現在の平面スケールを取得
+   */
+  public getPlaneScale(): number {
+    return this.distanceTracker?.getScale() ?? 1.0;
+  }
+
+  /**
+   * Phase 2.5: 特徴点アンカーの数を取得
+   */
+  public getAnchorCount(): { total: number; valid: number } {
+    const stats = this.featureAnchor?.getStatistics();
+    return {
+      total: stats?.totalAnchors ?? 0,
+      valid: stats?.validAnchors ?? 0,
+    };
   }
 }
 

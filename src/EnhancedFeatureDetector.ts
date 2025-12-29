@@ -235,8 +235,14 @@ export class EnhancedFeatureDetector {
     }
   }
 
+  /** Forward-Backward error threshold in pixels */
+  private readonly forwardBackwardThreshold = 1.0;
+
+  /** Motion consistency threshold (standard deviations from median) */
+  private readonly motionConsistencyThreshold = 2.0;
+
   /**
-   * 特徴点のトラッキング
+   * 特徴点のトラッキング（Forward-Backward Check + 動きの整合性チェック付き）
    */
   private trackFeatures(gray: any): Feature[] {
     if (this.prevFeatures.length === 0) return [];
@@ -251,36 +257,120 @@ export class EnhancedFeatureDetector {
       prevPoints.data32F[i * 2 + 1] = this.prevFeatures[i].y;
     }
 
+    // Forward: prev -> current
     const nextPoints = new this.cv.Mat();
-    const status = new this.cv.Mat();
-    const err = new this.cv.Mat();
+    const statusForward = new this.cv.Mat();
+    const errForward = new this.cv.Mat();
 
     this.cv.calcOpticalFlowPyrLK(
       this.prevGray,
       gray,
       prevPoints,
       nextPoints,
-      status,
-      err
+      statusForward,
+      errForward
     );
 
-    const trackedFeatures: Feature[] = [];
-    for (let i = 0; i < status.rows; i++) {
-      if (status.data[i] === 1) {
-        const feature = this.prevFeatures[i];
-        trackedFeatures.push({
-          ...feature,
-          x: nextPoints.data32F[i * 2],
-          y: nextPoints.data32F[i * 2 + 1],
-          trackingCount: feature.trackingCount + 1,
-        });
-      }
+    // Backward: current -> prev (for Forward-Backward Check)
+    const backPoints = new this.cv.Mat();
+    const statusBackward = new this.cv.Mat();
+    const errBackward = new this.cv.Mat();
+
+    this.cv.calcOpticalFlowPyrLK(
+      gray,
+      this.prevGray,
+      nextPoints,
+      backPoints,
+      statusBackward,
+      errBackward
+    );
+
+    // First pass: Forward-Backward Check
+    const candidates: Array<{
+      feature: Feature;
+      newX: number;
+      newY: number;
+      motionX: number;
+      motionY: number;
+    }> = [];
+
+    for (let i = 0; i < statusForward.rows; i++) {
+      if (statusForward.data[i] !== 1) continue;
+      if (statusBackward.data[i] !== 1) continue;
+
+      const origX = prevPoints.data32F[i * 2];
+      const origY = prevPoints.data32F[i * 2 + 1];
+      const backX = backPoints.data32F[i * 2];
+      const backY = backPoints.data32F[i * 2 + 1];
+
+      const fbError = Math.sqrt(
+        (origX - backX) * (origX - backX) + (origY - backY) * (origY - backY)
+      );
+
+      if (fbError > this.forwardBackwardThreshold) continue;
+
+      const newX = nextPoints.data32F[i * 2];
+      const newY = nextPoints.data32F[i * 2 + 1];
+
+      candidates.push({
+        feature: this.prevFeatures[i],
+        newX,
+        newY,
+        motionX: newX - origX,
+        motionY: newY - origY,
+      });
     }
 
     prevPoints.delete();
     nextPoints.delete();
-    status.delete();
-    err.delete();
+    statusForward.delete();
+    errForward.delete();
+    backPoints.delete();
+    statusBackward.delete();
+    errBackward.delete();
+
+    // Second pass: Motion consistency check
+    if (candidates.length < 3) {
+      // Not enough points for consistency check
+      return candidates.map((c) => ({
+        ...c.feature,
+        x: c.newX,
+        y: c.newY,
+        trackingCount: c.feature.trackingCount + 1,
+      }));
+    }
+
+    // Calculate median motion vector
+    const motionsX = candidates.map((c) => c.motionX).sort((a, b) => a - b);
+    const motionsY = candidates.map((c) => c.motionY).sort((a, b) => a - b);
+    const medianX = motionsX[Math.floor(motionsX.length / 2)];
+    const medianY = motionsY[Math.floor(motionsY.length / 2)];
+
+    // Calculate MAD (Median Absolute Deviation) for robust outlier detection
+    const deviations = candidates.map((c) =>
+      Math.sqrt(
+        (c.motionX - medianX) * (c.motionX - medianX) +
+          (c.motionY - medianY) * (c.motionY - medianY)
+      )
+    );
+    const sortedDeviations = [...deviations].sort((a, b) => a - b);
+    const mad = sortedDeviations[Math.floor(sortedDeviations.length / 2)];
+
+    // Filter out outliers (motion too different from median)
+    const threshold = Math.max(mad * this.motionConsistencyThreshold, 2.0);
+
+    const trackedFeatures: Feature[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      if (deviations[i] <= threshold) {
+        const c = candidates[i];
+        trackedFeatures.push({
+          ...c.feature,
+          x: c.newX,
+          y: c.newY,
+          trackingCount: c.feature.trackingCount + 1,
+        });
+      }
+    }
 
     return trackedFeatures;
   }
