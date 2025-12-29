@@ -308,67 +308,127 @@ if (tracker) {
 
 ---
 
-### Phase 2: Visual-Inertial Odometry（VIO）実装
+### Phase 2: Visual-Inertial Fusion（簡易VIO）実装
 
 **状態: ❌ 未着手**
 
 #### 目標
 
-視覚情報とIMUを組み合わせた連続的なポーズ推定、**ドリフト問題の解決**
+視覚情報とIMUを組み合わせた**ドリフト補正**と**平面位置の安定化**
 
-#### ⚠️ Phase 1のドリフト対策
+#### 設計方針
 
-| 対策                       | 説明                                             |
-| -------------------------- | ------------------------------------------------ |
-| **視覚によるドリフト補正** | 特徴点追跡結果でIMU推定を定期的にリセット        |
-| **センサーフュージョン**   | カルマンフィルタ/相補フィルタでIMUと視覚を統合   |
-| **キーフレーム参照**       | 過去のキーフレームとのマッチングで絶対位置を補正 |
+専門家アドバイス（`memo/ADVICE.md`）を参考に、SPALAMのスコープに適した**簡略化アプローチ**を採用：
+
+| アドバイス項目 | SPALAMでの対応 | 理由 |
+| -------------- | -------------- | ---- |
+| 密結合最適化（Ceres/G2O） | **相補フィルタ**で代替 | C++ライブラリのWasm化は過剰 |
+| ループ閉鎖検出 | **スキップ** | 単一平面トラッキングでは不要 |
+| マルチマップシステム | **スキップ** | SPALAMのスコープ外 |
+| IMU-カメラキャリブレーション | **時間同期のみ** | 空間キャリブレーションはスマホでは固定 |
+
+#### ⚠️ Phase 1からの改善点
+
+| 課題 | Phase 2での解決策 |
+| ---- | ----------------- |
+| IMUドリフト | 特徴点ベースの定期リセット |
+| 平面位置のズレ | 視覚情報で平面位置を再計算・補正 |
+| スケール不定性 | 深度推定値を基準スケールとして使用 |
 
 #### タスク
 
-- [ ] `src/tracking/KeyframeManager.ts` の作成
-  - [ ] キーフレーム選択基準の実装
-  - [ ] メモリ管理（古いキーフレームの破棄）
-- [ ] `src/tracking/SensorFusion.ts` の作成
-  - [ ] 相補フィルタ実装（高周波:IMU、低周波:視覚）
-  - [ ] カルマンフィルタ実装（オプション）
-  - [ ] **IMUドリフトの視覚補正**
-- [ ] `src/FeatureDetector.ts` の拡張
-  - [ ] 特徴点IDの永続化
-  - [ ] 平面特異的特徴追跡
-  - [ ] 安定性スコア計算
-- [ ] Essential Matrix / Fundamental Matrix計算
-- [ ] solvePnP実装（OpenCV.js利用）
+**2.1 相補フィルタの実装**
+
+- [ ] `src/tracking/ComplementaryFilter.ts` の作成
+  - [ ] 高周波成分（IMU姿勢）と低周波成分（視覚姿勢）の融合
+  - [ ] 適応的な重み調整（視覚信頼度に基づく）
+  - [ ] スムージング処理
+
+**2.2 視覚ベースのドリフトリセット**
+
+- [ ] `src/tracking/DriftCorrector.ts` の作成
+  - [ ] 特徴点の安定性評価（追跡フレーム数、移動量）
+  - [ ] 安定特徴点からの基準姿勢計算
+  - [ ] IMU姿勢の定期リセット（例：1秒ごと）
+
+**2.3 平面位置の視覚補正**
+
+- [ ] `src/SPALAM.ts` の拡張
+  - [ ] IMU有効時も特徴点追跡を継続
+  - [ ] 特徴点位置から平面の3D位置を再計算
+  - [ ] 平面位置のスムーズな更新（急激なジャンプ防止）
+
+**2.4 時間同期**
+
+- [ ] IMUイベントとカメラフレームのタイムスタンプ同期
+  - [ ] ブラウザでの遅延測定（約16ms想定）
+  - [ ] 補間による同期
 
 #### 設計
 
 ```typescript
-// src/tracking/SensorFusion.ts
-class SensorFusion {
-  private imuTracker: DeviceMotionTracker;
-  private visualTracker: FeatureDetector;
-  private complementaryAlpha: number = 0.98; // IMU重み
+// src/tracking/ComplementaryFilter.ts
+class ComplementaryFilter {
+  private alpha: number = 0.98; // IMU重み（高周波）
 
-  // IMUと視覚のポーズを融合
-  fuse(imuPose: Pose, visualPose: Pose | null): Pose;
+  constructor(options?: { alpha?: number });
 
-  // ドリフト補正（視覚情報で絶対位置をリセット）
-  correctDrift(visualReference: Pose): void;
+  // IMU姿勢と視覚姿勢を融合
+  fuse(
+    imuOrientation: THREE.Quaternion,
+    visualOrientation: THREE.Quaternion | null,
+    visualConfidence: number
+  ): THREE.Quaternion;
 
-  // 信頼度に基づく重み調整
-  adjustWeights(imuConfidence: number, visualConfidence: number): void;
+  // 視覚信頼度に基づいて重みを動的調整
+  updateAlpha(visualConfidence: number): void;
 }
 
-// src/tracking/KeyframeManager.ts
-class KeyframeManager {
-  private keyframes: Keyframe[] = [];
-  private planeDescriptors: Map<number, Float32Array> = new Map();
+// src/tracking/DriftCorrector.ts
+class DriftCorrector {
+  private referenceFeatures: StableFeature[] = [];
+  private lastResetTimestamp: number = 0;
+  private resetIntervalMs: number = 1000; // 1秒ごとにリセット
 
-  addKeyframe(frame: Keyframe): boolean;
-  findBestMatch(currentFrame: Keyframe): Keyframe | null;
-  maintainKeyframes(): void;
+  // 安定した特徴点を記録
+  updateReferenceFeatures(features: Feature[], trackingInfo: TrackingInfo): void;
+
+  // ドリフト補正が必要か判定
+  shouldCorrect(): boolean;
+
+  // 視覚情報から基準姿勢を計算してドリフトを補正
+  correctDrift(
+    currentIMUOrientation: THREE.Quaternion,
+    stableFeatures: StableFeature[]
+  ): THREE.Quaternion;
+}
+
+// 安定特徴点の型
+interface StableFeature {
+  id: number;
+  position2D: { x: number; y: number };
+  position3D: THREE.Vector3;
+  trackedFrames: number; // 連続追跡フレーム数
+  confidence: number;    // 0-1
 }
 ```
+
+#### Phase 2 完了基準
+
+- [ ] 相補フィルタが動作し、IMUと視覚が融合されている
+- [ ] 10秒以上の使用でもドリフトが視覚的に気にならないレベル
+- [ ] 平面メッシュが特徴点の位置に表示される
+- [ ] デバイスを動かしても平面が安定して追従する
+
+#### Phase 2 期待される動作
+
+| 操作 | 期待される結果 |
+| ---- | -------------- |
+| デバイスを回転 | 平面が正しい角度から見える（Phase 1と同様） |
+| デバイスを左右に移動 | 平面が特徴点の位置に留まる |
+| 10秒間使用 | ドリフトによる大きなズレがない |
+| 特徴点が見えなくなる | IMUのみで追跡継続（ドリフトは許容） |
+| 特徴点が再び見える | 視覚情報でドリフトがリセットされる |
 
 ---
 
