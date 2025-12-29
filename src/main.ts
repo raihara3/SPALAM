@@ -35,8 +35,10 @@ spalam.on("error", (error) => {
   let actionText = "詳細はデベロッパーツールのコンソールを確認してください";
 
   // エラータイプ別のメッセージ
-  if (error.message.includes("WASM depth estimation failed") || 
-      error.message.includes("not supported on mobile devices")) {
+  if (
+    error.message.includes("WASM depth estimation failed") ||
+    error.message.includes("not supported on mobile devices")
+  ) {
     // モバイルでの深度推定失敗は期待される動作なのでエラー表示しない
     return;
   } else if (error.message.includes("Depth estimation unavailable")) {
@@ -78,11 +80,11 @@ spalam.on("error", (error) => {
 // OpenCV読み込み待機
 const waitForOpenCV = (): Promise<void> => {
   return new Promise((resolve) => {
-    if (typeof cv !== 'undefined' && cv.Mat) {
+    if (typeof cv !== "undefined" && cv.Mat) {
       resolve();
     } else {
       const checkInterval = setInterval(() => {
-        if (typeof cv !== 'undefined' && cv.Mat) {
+        if (typeof cv !== "undefined" && cv.Mat) {
           clearInterval(checkInterval);
           resolve();
         }
@@ -115,10 +117,10 @@ const startSPALAM = async () => {
       /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
         navigator.userAgent
       );
-    
+
     updateLoadingMessage("OpenCV.jsを読み込み中...");
     await waitForOpenCV();
-    
+
     if (isMobile) {
       updateLoadingMessage("モバイルデバイス: WASM深度推定を読み込み中...");
     } else {

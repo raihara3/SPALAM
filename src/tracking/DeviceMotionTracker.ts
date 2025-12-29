@@ -16,7 +16,10 @@ import { IMUInitializer } from "./IMUInitializer";
  * iOS Safari向けの型拡張
  */
 interface DeviceOrientationEventStatic {
-  new (type: string, eventInitDict?: DeviceOrientationEventInit): DeviceOrientationEvent;
+  new (
+    type: string,
+    eventInitDict?: DeviceOrientationEventInit
+  ): DeviceOrientationEvent;
   prototype: DeviceOrientationEvent;
   requestPermission?: () => Promise<"granted" | "denied">;
 }
@@ -95,7 +98,9 @@ export class DeviceMotionTracker {
 
     if (!this.isSensorApiAvailable()) {
       this.setState(DeviceMotionTrackerState.ERROR);
-      this.emitError(new Error("DeviceOrientation/DeviceMotion API not available"));
+      this.emitError(
+        new Error("DeviceOrientation/DeviceMotion API not available")
+      );
       return false;
     }
 
@@ -193,11 +198,7 @@ export class DeviceMotionTracker {
    * DeviceOrientationイベントハンドラー
    */
   private handleDeviceOrientation(event: DeviceOrientationEvent): void {
-    if (
-      event.alpha === null ||
-      event.beta === null ||
-      event.gamma === null
-    ) {
+    if (event.alpha === null || event.beta === null || event.gamma === null) {
       return;
     }
 
@@ -420,10 +421,7 @@ export class DeviceMotionTracker {
 
     for (const measurement of this.driftMeasurements) {
       const angle =
-        2 *
-        Math.acos(
-          Math.min(1, Math.abs(measurement.orientationDrift.w))
-        );
+        2 * Math.acos(Math.min(1, Math.abs(measurement.orientationDrift.w)));
       totalOrientationDrift += angle;
       maxOrientationDrift = Math.max(maxOrientationDrift, angle);
     }
@@ -532,7 +530,9 @@ export class DeviceMotionTracker {
   /**
    * 初期化完了を待機
    */
-  public waitForInitialization(timeoutMilliseconds: number = 5000): Promise<boolean> {
+  public waitForInitialization(
+    timeoutMilliseconds: number = 5000
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       if (this.state === DeviceMotionTrackerState.TRACKING) {
         resolve(true);

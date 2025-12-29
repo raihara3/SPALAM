@@ -97,7 +97,11 @@ export class Vector3ExponentialSmoother {
   /**
    * Update with a new vector and return the smoothed result
    */
-  public update(x: number, y: number, z: number): { x: number; y: number; z: number } {
+  public update(
+    x: number,
+    y: number,
+    z: number
+  ): { x: number; y: number; z: number } {
     return {
       x: this.smootherX.update(x),
       y: this.smootherY.update(y),

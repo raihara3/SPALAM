@@ -2,7 +2,7 @@
 import { Feature } from "./types";
 
 export class FeatureDetector {
-  readonly cv: any;
+  readonly cv: typeof cv;
   readonly video: HTMLVideoElement;
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
@@ -14,7 +14,7 @@ export class FeatureDetector {
   private readonly useHarrisDetector: boolean = false; // Harrisコーナー検出器を使用するかどうか
   private readonly k: number = 0.04; // Harrisコーナー検出器のパラメータ。一般的に0.04から0.06の範囲で使用される
 
-  private prevGray: any = null; // 前フレームのグレースケール画像
+  private prevGray: cv.Mat | null = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
   private nextFeatureId: number = 0;
 
@@ -22,17 +22,17 @@ export class FeatureDetector {
   centerFeature: Feature | null = null; // 中心特徴点
 
   constructor({
-    cv,
+    cv: cvInstance,
     video,
     canvas = null,
     showFeatures = false,
   }: {
-    cv: any;
+    cv: typeof cv;
     video: HTMLVideoElement;
     canvas?: HTMLCanvasElement | null;
     showFeatures: boolean;
   }) {
-    this.cv = cv;
+    this.cv = cvInstance;
     this.video = video;
 
     this.canvas = canvas || document.createElement("canvas");
@@ -67,7 +67,7 @@ export class FeatureDetector {
     const H = this.canvas.height;
 
     // 2) マスクを作成（中央40%×40%だけ検出許可）
-    const mask = new this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
+    const mask = this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
     const roiX = Math.floor(W * 0.3);
     const roiY = Math.floor(H * 0.3);
     const roiW = Math.floor(W * 0.4);

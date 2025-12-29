@@ -1,32 +1,13 @@
 import * as THREE from "three";
-import { PlaneFittingResult } from "./PlaneFittingService";
+import {
+  SPALAMState,
+  type StateChangeEvent,
+  type StateChangeListener,
+  type PlaneFittingResult,
+} from "../types/State";
 
-/**
- * SPALAM状態
- */
-export enum SPALAMState {
-  IDLE = "IDLE",
-  INITIALIZING = "INITIALIZING",
-  DETECTING_FEATURES = "DETECTING_FEATURES",
-  FITTING_PLANE = "FITTING_PLANE",
-  PLANE_DETECTED = "PLANE_DETECTED",
-  ERROR = "ERROR",
-}
-
-/**
- * 状態変更イベント
- */
-export interface StateChangeEvent {
-  previousState: SPALAMState;
-  currentState: SPALAMState;
-  timestamp: number;
-  data?: any;
-}
-
-/**
- * 状態変更リスナー
- */
-export type StateChangeListener = (event: StateChangeEvent) => void;
+export { SPALAMState } from "../types/State";
+export type { StateChangeEvent, StateChangeListener } from "../types/State";
 
 /**
  * 状態管理クラス
@@ -35,7 +16,7 @@ export type StateChangeListener = (event: StateChangeEvent) => void;
 export class StateManager {
   private currentState: SPALAMState = SPALAMState.IDLE;
   private listeners: Set<StateChangeListener> = new Set();
-  private stateData: Map<SPALAMState, any> = new Map();
+  private stateData: Map<SPALAMState, unknown> = new Map();
   private stateHistory: StateChangeEvent[] = [];
   private maxHistorySize: number = 100;
 
@@ -56,10 +37,7 @@ export class StateManager {
   /**
    * 状態を変更
    */
-  public setState(
-    newState: SPALAMState,
-    data?: any
-  ): void {
+  public setState(newState: SPALAMState, data?: unknown): void {
     if (this.currentState === newState) return;
 
     const previousState = this.currentState;
@@ -111,7 +89,7 @@ export class StateManager {
     if (result) {
       this.planeResult = result;
     }
-    
+
     if (detected) {
       this.setState(SPALAMState.PLANE_DETECTED, { result });
     }
@@ -148,7 +126,7 @@ export class StateManager {
   /**
    * 状態データを取得
    */
-  public getStateData(state: SPALAMState): any {
+  public getStateData(state: SPALAMState): unknown {
     return this.stateData.get(state);
   }
 
@@ -180,7 +158,7 @@ export class StateManager {
     this.planeGroup = null;
     this.stateData.clear();
     this.stateHistory = [];
-    
+
     // リセットイベントを通知
     const event: StateChangeEvent = {
       previousState: this.currentState,

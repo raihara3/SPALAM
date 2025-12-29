@@ -1,0 +1,25 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts"],
+  "out": "docs",
+  "name": "SPALAM",
+  "readme": "none",
+  "includeVersion": true,
+  "excludePrivate": true,
+  "excludeProtected": false,
+  "excludeExternals": true,
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/test/**",
+    "**/workers/**",
+    "**/main.ts"
+  ],
+  "plugin": [],
+  "categorizeByGroup": true,
+  "categoryOrder": ["Core", "Services", "Tracking", "Helpers", "Types", "*"],
+  "sort": ["source-order"],
+  "navigationLinks": {
+    "GitHub": "https://github.com/raihara3/SPALAM"
+  }
+}

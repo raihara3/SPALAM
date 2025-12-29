@@ -1,6 +1,9 @@
 import { SPALAMConfig } from "./types";
 import { FeatureDetectionAlgorithm } from "../types/FeatureDetectionAlgorithm";
-import { DepthEstimationModel, InferenceEngine } from "../types/DepthEstimationModel";
+import {
+  DepthEstimationModel,
+  InferenceEngine,
+} from "../types/DepthEstimationModel";
 import { RenderingMode, ShadowMapType } from "../types/RenderingTypes";
 
 /**
@@ -22,26 +25,24 @@ export const defaultConfig: SPALAMConfig = {
       width: 0.5,
       height: 0.5,
     },
-    algorithms: [
-      { algorithm: FeatureDetectionAlgorithm.SHI_TOMASI }
-    ],
+    algorithms: [{ algorithm: FeatureDetectionAlgorithm.SHI_TOMASI }],
     algorithmParams: {
       harris: {
         k: 0.04,
         blockSize: 3,
-        threshold: 0.01
+        threshold: 0.01,
       },
       shiTomasi: {
         qualityLevel: 0.001,
         minDistance: 5,
         blockSize: 3,
         useHarrisDetector: false,
-        k: 0.04
+        k: 0.04,
       },
       fast: {
         threshold: 50,
         nonmaxSuppression: true,
-        type: 2 // TYPE_9_16
+        type: 2, // TYPE_9_16
       },
       orb: {
         nfeatures: 500,
@@ -52,15 +53,15 @@ export const defaultConfig: SPALAMConfig = {
         WTA_K: 2,
         scoreType: 0, // HARRIS_SCORE
         patchSize: 31,
-        fastThreshold: 20
+        fastThreshold: 20,
       },
       sift: {
         nfeatures: 0,
         nOctaveLayers: 3,
         contrastThreshold: 0.04,
         edgeThreshold: 10,
-        sigma: 1.6
-      }
+        sigma: 1.6,
+      },
     },
     useWebWorker: false,
     mergeStrategy: "union",
@@ -69,8 +70,8 @@ export const defaultConfig: SPALAMConfig = {
       [FeatureDetectionAlgorithm.SHI_TOMASI]: 1.0,
       [FeatureDetectionAlgorithm.FAST]: 0.8,
       [FeatureDetectionAlgorithm.ORB]: 0.9,
-      [FeatureDetectionAlgorithm.SIFT]: 1.2
-    } as Record<FeatureDetectionAlgorithm, number>
+      [FeatureDetectionAlgorithm.SIFT]: 1.2,
+    } as Record<FeatureDetectionAlgorithm, number>,
   },
   depth: {
     modelId: "onnx-community/depth-anything-v2-small",
@@ -80,38 +81,38 @@ export const defaultConfig: SPALAMConfig = {
     availableModels: [
       DepthEstimationModel.DEPTH_ANYTHING_V2_SMALL,
       DepthEstimationModel.DEPTH_ANYTHING_V2_BASE,
-      DepthEstimationModel.MIDAS_SMALL
+      DepthEstimationModel.MIDAS_SMALL,
     ],
     pipeline: {
       model: {
         modelId: DepthEstimationModel.DEPTH_ANYTHING_V2_SMALL,
-        inputSize: 504
+        inputSize: 504,
       },
       engine: {
         engine: InferenceEngine.WEBGPU,
         device: "gpu",
-        precision: "fp32"
+        precision: "fp32",
       },
       parallel: {
         useWorker: false,
-        numWorkers: 2
+        numWorkers: 2,
       },
       postProcessing: {
         gaussianBlur: false,
         bilateralFilter: true,
-        temporalSmoothing: true
-      }
+        temporalSmoothing: true,
+      },
     },
     cache: {
       enableFrameCache: true,
       cacheSize: 5,
-      cacheTTL: 100
+      cacheTTL: 100,
     },
     performance: {
       skipFrames: 0,
       maxFPS: 30,
-      adaptiveQuality: true
-    }
+      adaptiveQuality: true,
+    },
   },
   plane: {
     ransacIterations: 100,
@@ -145,40 +146,40 @@ export const defaultConfig: SPALAMConfig = {
       rendering: {
         mode: RenderingMode.STANDARD,
         antialias: true,
-        pixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : 1,
+        pixelRatio: typeof window !== "undefined" ? window.devicePixelRatio : 1,
         clearColor: 0x000000,
         clearAlpha: 0,
         shadows: {
           enabled: true,
           type: ShadowMapType.PCF_SOFT,
-          resolution: 2048
+          resolution: 2048,
         },
         postProcessing: {
           enabled: false,
-          effects: []
+          effects: [],
         },
         performance: {
           enableLOD: true,
           frustumCulling: true,
           occlusionCulling: false,
-          enableInstancing: true
-        }
+          enableInstancing: true,
+        },
       },
       lights: {
         ambient: {
           enabled: true,
           color: 0xffffff,
-          intensity: 0.6
+          intensity: 0.6,
         },
         directional: {
           enabled: true,
           color: 0xffffff,
           intensity: 0.8,
           position: { x: 5, y: 5, z: 5 },
-          castShadow: true
+          castShadow: true,
         },
         points: [],
-        spots: []
+        spots: [],
       },
       camera: {
         fov: 75,
@@ -193,33 +194,33 @@ export const defaultConfig: SPALAMConfig = {
           autoRotate: false,
           autoRotateSpeed: 2,
           enableDamping: true,
-          dampingFactor: 0.05
-        }
+          dampingFactor: 0.05,
+        },
       },
       animation: {
         enabled: true,
         default: {
           rotation: {
             enabled: false,
-            speed: { x: 0, y: 0.01, z: 0 }
+            speed: { x: 0, y: 0.01, z: 0 },
           },
           float: {
             enabled: false,
             amplitude: 0.1,
-            frequency: 1
+            frequency: 1,
           },
           pulse: {
             enabled: false,
             minScale: 0.9,
             maxScale: 1.1,
-            speed: 2
-          }
+            speed: 2,
+          },
         },
-        custom: []
+        custom: [],
       },
       enableInteraction: false,
-      enablePerformanceMonitor: false
-    }
+      enablePerformanceMonitor: false,
+    },
   },
 };
 
@@ -239,7 +240,8 @@ export function mergeWithDefaults(
         ...defaultConfig.features.roi,
         ...(config.features?.roi || {}),
       },
-      algorithms: config.features?.algorithms || defaultConfig.features.algorithms,
+      algorithms:
+        config.features?.algorithms || defaultConfig.features.algorithms,
       algorithmParams: {
         ...defaultConfig.features.algorithmParams,
         ...(config.features?.algorithmParams || {}),
@@ -255,9 +257,14 @@ export function mergeWithDefaults(
       pipeline: {
         ...defaultConfig.depth.pipeline,
         ...(config.depth?.pipeline || {}),
-        model: config.depth?.pipeline?.model || defaultConfig.depth.pipeline!.model,
-        engine: config.depth?.pipeline?.engine || defaultConfig.depth.pipeline!.engine,
-        parallel: config.depth?.pipeline?.parallel || defaultConfig.depth.pipeline?.parallel,
+        model:
+          config.depth?.pipeline?.model || defaultConfig.depth.pipeline!.model,
+        engine:
+          config.depth?.pipeline?.engine ||
+          defaultConfig.depth.pipeline!.engine,
+        parallel:
+          config.depth?.pipeline?.parallel ||
+          defaultConfig.depth.pipeline?.parallel,
         postProcessing: {
           ...defaultConfig.depth.pipeline?.postProcessing,
           ...(config.depth?.pipeline?.postProcessing || {}),

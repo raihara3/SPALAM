@@ -10,8 +10,7 @@ import {
 } from "../types/FeatureDetectionAlgorithm";
 import { FeatureDetectorConfig } from "../config/types";
 
-// Worker内で利用可能なOpenCVのタイプ
-declare const cv: any;
+// OpenCV types are defined in opencv.d.ts
 
 /**
  * Workerに送信するメッセージの型
@@ -21,7 +20,7 @@ export interface FeatureDetectionMessage {
   payload?: {
     imageData?: ImageData;
     config?: FeatureDetectorConfig;
-    mask?: any;
+    mask?: cv.Mat;
   };
 }
 
@@ -106,7 +105,7 @@ class FeatureDetectionWorkerHandler {
   /**
    * 特徴点検出処理
    */
-  private handleDetect(imageData?: ImageData, _maskData?: any): void {
+  private handleDetect(imageData?: ImageData, _maskData?: cv.Mat): void {
     if (!this.isInitialized) {
       throw new Error("Worker is not initialized");
     }
@@ -146,8 +145,8 @@ class FeatureDetectionWorkerHandler {
   /**
    * マスクを作成
    */
-  private createMask(height: number, width: number): any {
-    const mask = new cv.Mat.zeros(height, width, cv.CV_8UC1);
+  private createMask(height: number, width: number): cv.Mat {
+    const mask = cv.Mat.zeros(height, width, cv.CV_8UC1);
     const roi = this.config!.roi;
 
     const roiX = Math.floor(width * roi.xOffset);
@@ -163,7 +162,7 @@ class FeatureDetectionWorkerHandler {
   /**
    * 特徴点検出
    */
-  private detectFeatures(image: any, mask: any): Feature[] {
+  private detectFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const allFeatures: Feature[][] = [];
     const algorithmWeights: number[] = [];
 
@@ -194,8 +193,8 @@ class FeatureDetectionWorkerHandler {
    * 指定されたアルゴリズムで特徴点検出
    */
   private detectWithAlgorithm(
-    image: any,
-    mask: any,
+    image: cv.Mat,
+    mask: cv.Mat,
     algorithmConfig: AlgorithmConfig
   ): Feature[] {
     switch (algorithmConfig.algorithm) {
@@ -216,7 +215,7 @@ class FeatureDetectionWorkerHandler {
   /**
    * Shi-Tomasi特徴点検出
    */
-  private detectShiTomasiFeatures(image: any, mask: any): Feature[] {
+  private detectShiTomasiFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config!.algorithmParams.shiTomasi!;
     const points = new cv.Mat();
 
@@ -249,10 +248,10 @@ class FeatureDetectionWorkerHandler {
   /**
    * FAST特徴点検出
    */
-  private detectFastFeatures(image: any, mask: any): Feature[] {
+  private detectFastFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config!.algorithmParams.fast!;
     const keypoints = new cv.KeyPointVector();
-    const detector = new cv.FastFeatureDetector_create(
+    const detector = cv.FastFeatureDetector_create(
       params.threshold,
       params.nonmaxSuppression,
       params.type
@@ -280,12 +279,12 @@ class FeatureDetectionWorkerHandler {
   /**
    * ORB特徴点検出
    */
-  private detectOrbFeatures(image: any, mask: any): Feature[] {
+  private detectOrbFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config!.algorithmParams.orb!;
     const keypoints = new cv.KeyPointVector();
     const descriptors = new cv.Mat();
 
-    const detector = new cv.ORB_create(
+    const detector = cv.ORB_create(
       params.nfeatures,
       params.scaleFactor,
       params.nlevels,

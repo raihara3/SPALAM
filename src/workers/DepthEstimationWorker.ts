@@ -6,6 +6,11 @@
 import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
 import { DepthMapResult } from "../types/DepthEstimationModel";
 import { DepthEstimationConfig } from "../config/types";
+import type {
+  DepthModel,
+  DepthProcessor,
+  DepthTensor,
+} from "../types/Transformers";
 
 /**
  * Workerに送信するメッセージの型
@@ -38,8 +43,8 @@ export interface DepthEstimationResponse {
  */
 class DepthEstimationWorkerHandler {
   private config: DepthEstimationConfig | null = null;
-  private model: any = null;
-  private processor: any = null;
+  private model: DepthModel | null = null;
+  private processor: DepthProcessor | null = null;
   // private currentModelId: string | null = null;
   private isInitialized = false;
 
@@ -112,19 +117,24 @@ class DepthEstimationWorkerHandler {
   private async loadModel(modelId: string): Promise<void> {
     try {
       // モデルとプロセッサを読み込み
-      this.model = await AutoModel.from_pretrained(modelId, {
+      this.model = (await AutoModel.from_pretrained(modelId, {
         device: this.config?.device || "webgpu",
         dtype: "fp32",
-      });
+      })) as unknown as DepthModel;
 
-      this.processor = await AutoProcessor.from_pretrained(modelId, {});
+      this.processor = (await AutoProcessor.from_pretrained(
+        modelId,
+        {}
+      )) as unknown as DepthProcessor;
 
       // 入力サイズを設定
       const inputSize = this.config?.inputSize || 504;
-      this.processor.feature_extractor.size = {
-        width: inputSize,
-        height: inputSize,
-      };
+      if (this.processor?.feature_extractor) {
+        this.processor.feature_extractor.size = {
+          width: inputSize,
+          height: inputSize,
+        };
+      }
 
       // this.currentModelId = modelId;
       console.log(`Worker loaded model: ${modelId}`);
@@ -186,13 +196,13 @@ class DepthEstimationWorkerHandler {
    * 深度出力を処理
    */
   private processDepthOutput(
-    predicted_depth: any,
+    predicted_depth: DepthTensor,
     _originalWidth: number,
     _originalHeight: number,
     inferenceTime: number
   ): DepthMapResult {
     const depthData = predicted_depth.data as Float32Array;
-    const [_bs, height, width] = predicted_depth.dims;
+    const [, height, width] = predicted_depth.dims;
 
     // 最小値と最大値を計算
     let minDepth = Infinity;

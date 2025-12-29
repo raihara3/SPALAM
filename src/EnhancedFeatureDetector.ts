@@ -11,7 +11,7 @@ import {
  * 複数のアルゴリズムとWeb Worker対応を統合
  */
 export class EnhancedFeatureDetector {
-  readonly cv: any;
+  readonly cv: typeof cv;
   readonly video: HTMLVideoElement;
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
@@ -21,7 +21,7 @@ export class EnhancedFeatureDetector {
   private worker?: Worker;
   private workerReady = false;
 
-  private prevGray: any = null;
+  private prevGray: cv.Mat | null = null;
   private prevFeatures: Feature[] = [];
   // private nextFeatureId: number = 0;
 
@@ -29,17 +29,17 @@ export class EnhancedFeatureDetector {
   centerFeature: Feature | null = null;
 
   constructor({
-    cv,
+    cv: cvInstance,
     video,
     canvas = null,
     config,
   }: {
-    cv: any;
+    cv: typeof cv;
     video: HTMLVideoElement;
     canvas?: HTMLCanvasElement | null;
     config: FeatureDetectorConfig;
   }) {
-    this.cv = cv;
+    this.cv = cvInstance;
     this.video = video;
     this.config = config;
 
@@ -162,7 +162,7 @@ export class EnhancedFeatureDetector {
     const H = this.canvas.height;
 
     // マスクを作成
-    const mask = new this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
+    const mask = this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
     const roi = this.config.roi;
     const roiX = Math.floor(W * roi.xOffset);
     const roiY = Math.floor(H * roi.yOffset);
@@ -212,7 +212,7 @@ export class EnhancedFeatureDetector {
   /**
    * 新しい特徴点の検出
    */
-  private detectNewFeatures(gray: any, mask: any): Feature[] {
+  private detectNewFeatures(gray: cv.Mat, mask: cv.Mat): Feature[] {
     if (this.config.useWebWorker && this.worker && this.workerReady) {
       // Web Worker で非同期検出
       const imageData = this.ctx.getImageData(
@@ -244,8 +244,8 @@ export class EnhancedFeatureDetector {
   /**
    * 特徴点のトラッキング（Forward-Backward Check + 動きの整合性チェック付き）
    */
-  private trackFeatures(gray: any): Feature[] {
-    if (this.prevFeatures.length === 0) return [];
+  private trackFeatures(gray: cv.Mat): Feature[] {
+    if (this.prevFeatures.length === 0 || !this.prevGray) return [];
 
     const prevPoints = new this.cv.Mat(
       this.prevFeatures.length,

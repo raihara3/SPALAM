@@ -49,7 +49,8 @@ export class CameraController {
     } catch (error) {
       console.error("Camera initialization failed:", error);
       const errorName = error instanceof Error ? error.name : "";
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
       if (errorName === "NotAllowedError") {
         throw new Error(

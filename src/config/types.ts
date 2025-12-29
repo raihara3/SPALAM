@@ -2,26 +2,26 @@
  * SPALAM設定型定義
  */
 
-import { 
-  FeatureDetectionAlgorithm, 
+import {
+  FeatureDetectionAlgorithm,
   AlgorithmConfig,
   HarrisParams,
   ShiTomasiParams,
   FastParams,
   OrbParams,
-  SiftParams
+  SiftParams,
 } from "../types/FeatureDetectionAlgorithm";
 
-import { 
+import {
   DepthEstimationModel,
-  DepthPipelineConfig
+  DepthPipelineConfig,
 } from "../types/DepthEstimationModel";
 
 import {
   RenderingConfig,
   LightConfig,
   CameraConfig,
-  AnimationConfig
+  AnimationConfig,
 } from "../types/RenderingTypes";
 
 /**

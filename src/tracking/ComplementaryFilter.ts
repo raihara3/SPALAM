@@ -84,7 +84,10 @@ export class ComplementaryFilter {
     // 例: confidence=1.0 -> alpha=0.90, confidence=0.5 -> alpha=0.95
     const adjustmentRange = 0.1; // baseAlphaからの調整幅
     const adjustment = adjustmentRange * (1 - visualConfidence);
-    this.alpha = Math.max(0.5, Math.min(0.99, this.baseAlpha - adjustmentRange + adjustment));
+    this.alpha = Math.max(
+      0.5,
+      Math.min(0.99, this.baseAlpha - adjustmentRange + adjustment)
+    );
   }
 
   /**

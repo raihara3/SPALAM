@@ -21,7 +21,12 @@ export interface AlgorithmConfig {
   /** アルゴリズムの種類 */
   algorithm: FeatureDetectionAlgorithm;
   /** アルゴリズム固有のパラメータ */
-  params?: any;
+  params?:
+    | HarrisParams
+    | ShiTomasiParams
+    | FastParams
+    | OrbParams
+    | SiftParams;
 }
 
 /**

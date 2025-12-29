@@ -91,7 +91,8 @@ export class DriftCorrector {
         );
       } else {
         // 新しい特徴点を追加
-        const position3D = depth3DPoints?.get(feature.id) ?? new THREE.Vector3();
+        const position3D =
+          depth3DPoints?.get(feature.id) ?? new THREE.Vector3();
 
         this.stableFeatures.set(feature.id, {
           id: feature.id,
@@ -106,7 +107,10 @@ export class DriftCorrector {
 
     // 見えなくなった特徴点と古い特徴点を削除
     for (const [id, feature] of this.stableFeatures) {
-      if (!currentIds.has(id) || now - feature.lastUpdated > this.featureExpiryMs) {
+      if (
+        !currentIds.has(id) ||
+        now - feature.lastUpdated > this.featureExpiryMs
+      ) {
         this.stableFeatures.delete(id);
       }
     }

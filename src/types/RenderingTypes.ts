@@ -1,3 +1,5 @@
+import * as THREE from "three";
+
 /**
  * レンダリングモードの種類
  */
@@ -9,7 +11,7 @@ export enum RenderingMode {
   /** ポイントクラウド */
   POINT_CLOUD = "point_cloud",
   /** シェーダーマテリアル */
-  SHADER = "shader"
+  SHADER = "shader",
 }
 
 /**
@@ -27,7 +29,7 @@ export enum PostProcessingEffect {
   /** 環境光遮蔽 */
   SSAO = "ssao",
   /** トーンマッピング */
-  TONE_MAPPING = "tone_mapping"
+  TONE_MAPPING = "tone_mapping",
 }
 
 /**
@@ -43,7 +45,7 @@ export enum ShadowMapType {
   /** PCFソフトシャドウマップ */
   PCF_SOFT = "pcf_soft",
   /** VSMシャドウマップ */
-  VSM = "vsm"
+  VSM = "vsm",
 }
 
 /**
@@ -147,7 +149,7 @@ export interface MaterialConfig {
   shader?: {
     vertexShader: string;
     fragmentShader: string;
-    uniforms: Record<string, any>;
+    uniforms: Record<string, THREE.IUniform>;
   };
 }
 

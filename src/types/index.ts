@@ -5,4 +5,7 @@ export * from "./DepthEstimationModel";
 export * from "./RenderingTypes";
 export * from "./API";
 export * from "./DeviceMotion";
+export * from "./State";
+export * from "./ServiceProvider";
+export * from "./Transformers";
 export type { Feature } from "./Feature";

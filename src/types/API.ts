@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import { Point2D, Point3D } from "./Point";
-import { SPALAMConfig } from "../config/types";
-import { StateChangeEvent } from "../services/StateManager";
+import type { Point2D, Point3D } from "./Point";
+import type { SPALAMConfig } from "../config/types";
+import type { StateChangeEvent } from "./State";
+import type { DeviceMotionTrackerEvent } from "./DeviceMotion";
 
 /**
  * SPALAMイベント型定義
@@ -13,6 +14,8 @@ export interface SPALAMEvents {
   "plane:detected": (plane: PlaneData) => void;
   /** 状態変更時に発火 */
   "state:changed": (event: StateChangeEvent) => void;
+  /** IMU状態変更時に発火 */
+  "imu:stateChange": (event: DeviceMotionTrackerEvent) => void;
   /** エラー発生時に発火 */
   error: (error: Error) => void;
 }
@@ -84,9 +87,9 @@ export interface SPALAMStartOptions {
  * SPALAM設定ビルダー用の型
  */
 export interface SPALAMBuilderConfig {
-  features?: Partial<SPALAMConfig['features']>;
-  depth?: Partial<SPALAMConfig['depth']>;
-  plane?: Partial<SPALAMConfig['plane']>;
+  features?: Partial<SPALAMConfig["features"]>;
+  depth?: Partial<SPALAMConfig["depth"]>;
+  plane?: Partial<SPALAMConfig["plane"]>;
 }
 
 /**
@@ -103,7 +106,7 @@ export enum SPALAMStateEnum {
   DETECTING_FEATURES = "detecting_features",
   FITTING_PLANE = "fitting_plane",
   PLANE_DETECTED = "plane_detected",
-  ERROR = "error"
+  ERROR = "error",
 }
 
 /**
@@ -159,7 +162,7 @@ export enum SPALAMErrorType {
   FEATURE_DETECTION_FAILED = "feature_detection_failed",
   DEPTH_ESTIMATION_FAILED = "depth_estimation_failed",
   PLANE_FITTING_FAILED = "plane_fitting_failed",
-  UNKNOWN = "unknown"
+  UNKNOWN = "unknown",
 }
 
 /**
@@ -169,11 +172,7 @@ export class SPALAMError extends Error {
   public readonly type: SPALAMErrorType;
   public readonly originalError?: Error;
 
-  constructor(
-    type: SPALAMErrorType,
-    message: string,
-    originalError?: Error
-  ) {
+  constructor(type: SPALAMErrorType, message: string, originalError?: Error) {
     super(message);
     this.name = "SPALAMError";
     this.type = type;
@@ -188,7 +187,7 @@ export enum LogLevel {
   DEBUG = "debug",
   INFO = "info",
   WARN = "warn",
-  ERROR = "error"
+  ERROR = "error",
 }
 
 /**

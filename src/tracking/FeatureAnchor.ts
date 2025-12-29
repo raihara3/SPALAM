@@ -145,7 +145,10 @@ export class FeatureAnchor {
 
     // Remove anchors that are no longer visible or expired
     for (const [id, anchor] of this.anchors) {
-      if (!currentIds.has(id) || now - anchor.lastUpdated > this.anchorExpiryMs) {
+      if (
+        !currentIds.has(id) ||
+        now - anchor.lastUpdated > this.anchorExpiryMs
+      ) {
         this.anchors.delete(id);
       }
     }
@@ -364,7 +367,8 @@ export class FeatureAnchor {
       totalAnchors: anchors.length,
       validAnchors: validAnchors.length,
       averageError: anchors.length > 0 ? totalError / anchors.length : 0,
-      averageStability: anchors.length > 0 ? totalStability / anchors.length : 0,
+      averageStability:
+        anchors.length > 0 ? totalStability / anchors.length : 0,
     };
   }
 

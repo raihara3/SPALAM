@@ -120,7 +120,10 @@ export class GravityAligner {
     let correctionApplied = 0;
     let confidence = 1.0;
 
-    if (this.planeType === PlaneType.HORIZONTAL && this.forceHorizontalAlignment) {
+    if (
+      this.planeType === PlaneType.HORIZONTAL &&
+      this.forceHorizontalAlignment
+    ) {
       // Force horizontal alignment: normal should be parallel to gravity
       const sign = dotProduct >= 0 ? 1 : -1;
       const targetNormal = this.smoothedGravity.clone().multiplyScalar(sign);
@@ -221,9 +224,11 @@ export class GravityAligner {
    * Check if gravity data is available
    */
   public hasGravityData(): boolean {
-    return this.gravitySmoother.getValue().x !== 0 ||
-           this.gravitySmoother.getValue().y !== 0 ||
-           this.gravitySmoother.getValue().z !== 0;
+    return (
+      this.gravitySmoother.getValue().x !== 0 ||
+      this.gravitySmoother.getValue().y !== 0 ||
+      this.gravitySmoother.getValue().z !== 0
+    );
   }
 
   /**
@@ -232,11 +237,16 @@ export class GravityAligner {
    * @param currentNormal Current plane normal
    * @returns Quaternion to rotate the plane to align with gravity
    */
-  public getAlignmentQuaternion(currentNormal: THREE.Vector3): THREE.Quaternion {
+  public getAlignmentQuaternion(
+    currentNormal: THREE.Vector3
+  ): THREE.Quaternion {
     const result = this.alignPlaneNormal(currentNormal);
 
     const quaternion = new THREE.Quaternion();
-    quaternion.setFromUnitVectors(currentNormal.normalize(), result.correctedNormal);
+    quaternion.setFromUnitVectors(
+      currentNormal.normalize(),
+      result.correctedNormal
+    );
 
     return quaternion;
   }

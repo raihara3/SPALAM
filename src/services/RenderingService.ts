@@ -1,12 +1,12 @@
 import * as THREE from "three";
-import { 
-  RenderingMode, 
+import {
+  RenderingMode,
   PostProcessingEffect,
   ShadowMapType,
   RenderingConfig,
   LightConfig,
   MaterialConfig,
-  RenderingStats
+  RenderingStats,
 } from "../types/RenderingTypes";
 
 /**
@@ -18,7 +18,7 @@ export class RenderingService {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private config: RenderingConfig;
-  
+
   // パフォーマンス計測
   private stats: RenderingStats = {
     fps: 0,
@@ -26,16 +26,16 @@ export class RenderingService {
     drawCalls: 0,
     triangles: 0,
     textureMemory: 0,
-    geometryMemory: 0
+    geometryMemory: 0,
   };
-  
+
   private lastFrameTime: number = 0;
   private frameCount: number = 0;
   private fpsUpdateTime: number = 0;
-  
+
   // LODマネージャー
   private lodObjects: Map<string, THREE.LOD> = new Map();
-  
+
   // インスタンスマネージャー
   private instancedMeshes: Map<string, THREE.InstancedMesh> = new Map();
 
@@ -49,7 +49,7 @@ export class RenderingService {
     this.scene = scene;
     this.camera = camera;
     this.config = config;
-    
+
     this.applyConfig();
   }
 
@@ -61,10 +61,10 @@ export class RenderingService {
     this.renderer.setPixelRatio(this.config.pixelRatio);
     this.renderer.setClearColor(this.config.clearColor, this.config.clearAlpha);
     // this.renderer.antialias = this.config.antialias; // 読み取り専用
-    
+
     // シャドウ設定
     this.configureShadows();
-    
+
     // ポストプロセッシング設定
     if (this.config.postProcessing.enabled) {
       this.setupPostProcessing();
@@ -76,9 +76,9 @@ export class RenderingService {
    */
   private configureShadows(): void {
     const shadowConfig = this.config.shadows;
-    
+
     this.renderer.shadowMap.enabled = shadowConfig.enabled;
-    
+
     if (shadowConfig.enabled) {
       switch (shadowConfig.type) {
         case ShadowMapType.BASIC:
@@ -104,8 +104,8 @@ export class RenderingService {
     // ポストプロセッシング効果の設定
     // 注: 実際の実装では、three/examples/jsm/postprocessing を使用
     const effects = this.config.postProcessing.effects;
-    
-    effects.forEach(effect => {
+
+    effects.forEach((effect) => {
       switch (effect) {
         case PostProcessingEffect.ANTIALIASING:
           // FXAAやSMAAの設定
@@ -134,10 +134,10 @@ export class RenderingService {
   public setupLights(lightConfig: LightConfig): void {
     // 既存のライトを削除
     const existingLights = this.scene.children.filter(
-      child => child instanceof THREE.Light
+      (child) => child instanceof THREE.Light
     );
-    existingLights.forEach(light => this.scene.remove(light));
-    
+    existingLights.forEach((light) => this.scene.remove(light));
+
     // 環境光
     if (lightConfig.ambient.enabled) {
       const ambientLight = new THREE.AmbientLight(
@@ -146,7 +146,7 @@ export class RenderingService {
       );
       this.scene.add(ambientLight);
     }
-    
+
     // 平行光源
     if (lightConfig.directional.enabled) {
       const directionalLight = new THREE.DirectionalLight(
@@ -159,7 +159,7 @@ export class RenderingService {
         lightConfig.directional.position.z
       );
       directionalLight.castShadow = lightConfig.directional.castShadow;
-      
+
       if (directionalLight.castShadow) {
         directionalLight.shadow.mapSize.width = this.config.shadows.resolution;
         directionalLight.shadow.mapSize.height = this.config.shadows.resolution;
@@ -170,12 +170,12 @@ export class RenderingService {
         directionalLight.shadow.camera.top = 10;
         directionalLight.shadow.camera.bottom = -10;
       }
-      
+
       this.scene.add(directionalLight);
     }
-    
+
     // ポイントライト
-    lightConfig.points.forEach(pointConfig => {
+    lightConfig.points.forEach((pointConfig) => {
       const pointLight = new THREE.PointLight(
         pointConfig.color,
         pointConfig.intensity,
@@ -189,9 +189,9 @@ export class RenderingService {
       );
       this.scene.add(pointLight);
     });
-    
+
     // スポットライト
-    lightConfig.spots.forEach(spotConfig => {
+    lightConfig.spots.forEach((spotConfig) => {
       const spotLight = new THREE.SpotLight(
         spotConfig.color,
         spotConfig.intensity,
@@ -220,17 +220,17 @@ export class RenderingService {
    */
   public createMaterial(config: MaterialConfig): THREE.Material {
     let material: THREE.Material;
-    
+
     switch (config.type) {
       case "basic":
         material = new THREE.MeshBasicMaterial({
           color: config.base.color,
           opacity: config.base.opacity,
           transparent: config.base.transparent,
-          side: this.getMaterialSide(config.base.side)
+          side: this.getMaterialSide(config.base.side),
         });
         break;
-        
+
       case "standard":
         material = new THREE.MeshStandardMaterial({
           color: config.base.color,
@@ -240,10 +240,10 @@ export class RenderingService {
           metalness: config.pbr?.metalness || 0,
           roughness: config.pbr?.roughness || 1,
           emissive: config.pbr?.emissive || 0x000000,
-          emissiveIntensity: config.pbr?.emissiveIntensity || 1
+          emissiveIntensity: config.pbr?.emissiveIntensity || 1,
         });
         break;
-        
+
       case "phong":
         material = new THREE.MeshPhongMaterial({
           color: config.base.color,
@@ -251,10 +251,10 @@ export class RenderingService {
           transparent: config.base.transparent,
           side: this.getMaterialSide(config.base.side),
           emissive: config.pbr?.emissive || 0x000000,
-          emissiveIntensity: config.pbr?.emissiveIntensity || 1
+          emissiveIntensity: config.pbr?.emissiveIntensity || 1,
         });
         break;
-        
+
       case "physical":
         material = new THREE.MeshPhysicalMaterial({
           color: config.base.color,
@@ -264,10 +264,10 @@ export class RenderingService {
           metalness: config.pbr?.metalness || 0,
           roughness: config.pbr?.roughness || 1,
           emissive: config.pbr?.emissive || 0x000000,
-          emissiveIntensity: config.pbr?.emissiveIntensity || 1
+          emissiveIntensity: config.pbr?.emissiveIntensity || 1,
         });
         break;
-        
+
       case "shader":
         if (config.shader) {
           material = new THREE.ShaderMaterial({
@@ -275,22 +275,22 @@ export class RenderingService {
             fragmentShader: config.shader.fragmentShader,
             uniforms: config.shader.uniforms,
             transparent: config.base.transparent,
-            side: this.getMaterialSide(config.base.side)
+            side: this.getMaterialSide(config.base.side),
           });
         } else {
           // フォールバック
           material = new THREE.MeshBasicMaterial({
-            color: config.base.color
+            color: config.base.color,
           });
         }
         break;
-        
+
       default:
         material = new THREE.MeshBasicMaterial({
-          color: config.base.color
+          color: config.base.color,
         });
     }
-    
+
     return material;
   }
 
@@ -322,12 +322,12 @@ export class RenderingService {
     }>
   ): THREE.LOD {
     const lod = new THREE.LOD();
-    
-    levels.forEach(level => {
+
+    levels.forEach((level) => {
       const mesh = new THREE.Mesh(level.geometry, level.material);
       lod.addLevel(mesh, level.distance);
     });
-    
+
     this.lodObjects.set(id, lod);
     return lod;
   }
@@ -343,7 +343,7 @@ export class RenderingService {
   ): THREE.InstancedMesh {
     const instancedMesh = new THREE.InstancedMesh(geometry, material, count);
     instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    
+
     this.instancedMeshes.set(id, instancedMesh);
     return instancedMesh;
   }
@@ -360,9 +360,13 @@ export class RenderingService {
   ): void {
     const instancedMesh = this.instancedMeshes.get(id);
     if (!instancedMesh) return;
-    
+
     const matrix = new THREE.Matrix4();
-    matrix.compose(position, new THREE.Quaternion().setFromEuler(rotation), scale);
+    matrix.compose(
+      position,
+      new THREE.Quaternion().setFromEuler(rotation),
+      scale
+    );
     instancedMesh.setMatrixAt(index, matrix);
     instancedMesh.instanceMatrix.needsUpdate = true;
   }
@@ -372,14 +376,14 @@ export class RenderingService {
    */
   private performFrustumCulling(): void {
     if (!this.config.performance.frustumCulling) return;
-    
+
     const frustum = new THREE.Frustum();
     const matrix = new THREE.Matrix4().multiplyMatrices(
       this.camera.projectionMatrix,
       this.camera.matrixWorldInverse
     );
     frustum.setFromProjectionMatrix(matrix);
-    
+
     this.scene.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         object.visible = frustum.intersectsObject(object);
@@ -394,17 +398,17 @@ export class RenderingService {
     const now = performance.now();
     const deltaTime = now - this.lastFrameTime;
     this.lastFrameTime = now;
-    
+
     this.frameCount++;
     this.stats.frameTime = deltaTime;
-    
+
     // FPS計算（1秒ごと）
     if (now - this.fpsUpdateTime > 1000) {
       this.stats.fps = this.frameCount;
       this.frameCount = 0;
       this.fpsUpdateTime = now;
     }
-    
+
     // レンダリング情報
     const info = this.renderer.info;
     this.stats.drawCalls = info.render.calls;
@@ -418,27 +422,27 @@ export class RenderingService {
    */
   public setRenderingMode(mode: RenderingMode): void {
     this.config.mode = mode;
-    
+
     // すべてのメッシュのマテリアルを更新
     this.scene.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         const material = object.material as THREE.Material;
-        
+
         switch (mode) {
           case RenderingMode.WIREFRAME:
-            if ('wireframe' in material) {
-              (material as any).wireframe = true;
+            if ("wireframe" in material) {
+              (material as THREE.MeshBasicMaterial).wireframe = true;
             }
             break;
-            
+
           case RenderingMode.POINT_CLOUD:
             // ポイントクラウドモードの実装
             break;
-            
+
           case RenderingMode.STANDARD:
           default:
-            if ('wireframe' in material) {
-              (material as any).wireframe = false;
+            if ("wireframe" in material) {
+              (material as THREE.MeshBasicMaterial).wireframe = false;
             }
             break;
         }
@@ -452,15 +456,15 @@ export class RenderingService {
   public render(): void {
     // フラスタムカリング
     this.performFrustumCulling();
-    
+
     // LOD更新
-    this.lodObjects.forEach(lod => {
+    this.lodObjects.forEach((lod) => {
       lod.update(this.camera);
     });
-    
+
     // 統計更新
     this.updateStats();
-    
+
     // レンダリング
     this.renderer.render(this.scene, this.camera);
   }
@@ -485,12 +489,12 @@ export class RenderingService {
    */
   public dispose(): void {
     // LODオブジェクトのクリーンアップ
-    this.lodObjects.forEach(lod => {
-      lod.traverse(child => {
+    this.lodObjects.forEach((lod) => {
+      lod.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           child.geometry.dispose();
           if (Array.isArray(child.material)) {
-            child.material.forEach(m => m.dispose());
+            child.material.forEach((m) => m.dispose());
           } else {
             child.material.dispose();
           }
@@ -498,12 +502,12 @@ export class RenderingService {
       });
     });
     this.lodObjects.clear();
-    
+
     // インスタンスメッシュのクリーンアップ
-    this.instancedMeshes.forEach(mesh => {
+    this.instancedMeshes.forEach((mesh) => {
       mesh.geometry.dispose();
       if (Array.isArray(mesh.material)) {
-        mesh.material.forEach(m => m.dispose());
+        mesh.material.forEach((m) => m.dispose());
       } else {
         mesh.material.dispose();
       }
