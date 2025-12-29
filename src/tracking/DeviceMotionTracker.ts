@@ -320,6 +320,32 @@ export class DeviceMotionTracker {
   }
 
   /**
+   * 重力ベクトルを取得
+   *
+   * デバイスの加速度センサーから重力方向を推定する。
+   * 静止時または等速運動時に最も正確な値を返す。
+   */
+  public getGravityVector(): THREE.Vector3 | null {
+    if (!this.motion) return null;
+
+    const acceleration = this.motion.accelerationIncludingGravity;
+    const linearAcceleration = this.motion.acceleration;
+
+    if (linearAcceleration) {
+      // 線形加速度がある場合、重力 = 総加速度 - 線形加速度
+      return new THREE.Vector3(
+        acceleration.x - linearAcceleration.x,
+        acceleration.y - linearAcceleration.y,
+        acceleration.z - linearAcceleration.z
+      ).normalize();
+    }
+
+    // 線形加速度がない場合、総加速度を正規化して返す
+    // （静止時は総加速度 ≈ 重力）
+    return acceleration.clone().normalize();
+  }
+
+  /**
    * デバイス座標系のベクトルをワールド座標系に変換
    */
   public deviceToWorld(deviceVector: THREE.Vector3): THREE.Vector3 {
