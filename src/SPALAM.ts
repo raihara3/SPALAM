@@ -38,7 +38,11 @@ import { ServiceContainer } from "./utils/ServiceContainer";
 import { IServiceProvider } from "./interfaces/IServiceProvider";
 
 // tracking
-import { DeviceMotionTracker } from "./tracking";
+import {
+  DeviceMotionTracker,
+  ComplementaryFilter,
+  DriftCorrector,
+} from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 
 // config
@@ -341,6 +345,11 @@ export class SPALAM implements IServiceProvider {
   private imuTrackingEnabled: boolean = false;
   /** IMUデバッグ情報を表示するかどうか */
   private showIMUDebug: boolean = false;
+
+  /** 相補フィルタ（Phase 2: Visual-Inertial Fusion） */
+  private complementaryFilter: ComplementaryFilter | null = null;
+  /** ドリフト補正器（Phase 2: Visual-Inertial Fusion） */
+  private driftCorrector: DriftCorrector | null = null;
 
 
   constructor(
@@ -746,6 +755,47 @@ export class SPALAM implements IServiceProvider {
   }
 
   /**
+   * IMU有効時: 視覚情報から平面のワールド位置を更新
+   *
+   * 特徴点が画面内にある時、その位置を使って平面のワールド座標を補正する。
+   * カメラはIMUで回転するが、平面は特徴点の位置に正確に配置される。
+   */
+  private updatePlaneWorldPosition(centerFeature: Feature): void {
+    const camera = this.arRenderer!.getCamera();
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
+
+    if (!planeResult || !planeGroup) return;
+
+    const width = this.frameProcessor.getCanvasWidth();
+    const height = this.frameProcessor.getCanvasHeight();
+
+    // 中心特徴点の正規化座標 (-1 to 1)
+    const normalizedX = (centerFeature.x / width - 0.5) * 2;
+    const normalizedY = -(centerFeature.y / height - 0.5) * 2;
+
+    // 深度（初期検出時の値を使用）
+    const depth = Math.abs(planeResult.P0.z);
+
+    // カメラのFoVから3D位置を計算（カメラローカル座標系）
+    const fovRadians = (camera.fov * Math.PI) / 180;
+    const tanHalfFov = Math.tan(fovRadians / 2);
+
+    // カメラ座標系での位置
+    const localX = normalizedX * tanHalfFov * camera.aspect * depth;
+    const localY = normalizedY * tanHalfFov * depth;
+    const localZ = -depth;
+
+    // カメラローカル座標をワールド座標に変換
+    // camera.localToWorldを使用してカメラの回転を考慮
+    const localPosition = new THREE.Vector3(localX, localY, localZ);
+    const worldPosition = localPosition.applyQuaternion(camera.quaternion);
+
+    // スムーズに追従
+    planeGroup.position.lerp(worldPosition, 0.8);
+  }
+
+  /**
    * レンダリングループ
    * ARレンダリングを実行
    */
@@ -785,11 +835,20 @@ export class SPALAM implements IServiceProvider {
       };
       this.emit("frame:processed", frameData);
 
-      // 平面が検出済みで、中心特徴点が存在する場合はカメラ位置を更新
-      // 平面はワールド座標で固定し、カメラのみを動かすことでAR表示を実現
-      // ただし、IMUトラッキング有効時は位置更新を無効化（Phase 2で視覚とIMUを統合予定）
-      if (this.stateManager.isPlaneDetected() && centerFeature && !this.imuTrackingEnabled) {
-        this.updateCameraPosition(centerFeature);
+      // Phase 2: ドリフト補正器に特徴点情報を更新（IMU有効時も継続）
+      if (this.driftCorrector && features.length > 0) {
+        this.updateDriftCorrector(features);
+      }
+
+      // 平面が検出済みで、中心特徴点が存在する場合
+      if (this.stateManager.isPlaneDetected() && centerFeature) {
+        if (this.imuTrackingEnabled) {
+          // IMU有効時: 視覚情報で平面のワールド位置を補正
+          this.updatePlaneWorldPosition(centerFeature);
+        } else {
+          // IMU無効時: 従来通りカメラ位置を更新（平面が特徴点に追従）
+          this.updateCameraPosition(centerFeature);
+        }
       }
     }
 
@@ -800,21 +859,82 @@ export class SPALAM implements IServiceProvider {
   }
 
   /**
-   * IMUからカメラの姿勢を更新
+   * IMUからカメラの姿勢を更新（Phase 2: 相補フィルタ対応）
    */
   private updateCameraFromIMU(): void {
     if (!this.deviceMotionTracker || !this.arRenderer) return;
 
-    const orientation = this.deviceMotionTracker.getOrientation();
-    if (!orientation) return;
+    const imuOrientation = this.deviceMotionTracker.getOrientation();
+    if (!imuOrientation) return;
 
     const camera = this.arRenderer.getCamera();
-    camera.quaternion.copy(orientation);
 
-    // デバッグ: IMU姿勢更新を確認（本番では削除）
-    if (this.showIMUDebug) {
-      console.log(`IMU: q(${orientation.x.toFixed(3)}, ${orientation.y.toFixed(3)}, ${orientation.z.toFixed(3)}, ${orientation.w.toFixed(3)})`);
+    // Phase 2: 相補フィルタで視覚情報と融合
+    if (this.complementaryFilter && this.driftCorrector) {
+      const visualConfidence = this.driftCorrector.getVisualConfidence();
+
+      // 相補フィルタで融合（視覚姿勢は現時点ではnull - 将来的に視覚からの姿勢推定を追加）
+      const fusedOrientation = this.complementaryFilter.fuse(
+        imuOrientation,
+        null,
+        visualConfidence
+      );
+
+      camera.quaternion.copy(fusedOrientation);
+
+      // ドリフト補正チェック
+      if (this.driftCorrector.shouldCorrect()) {
+        const visualReference = this.driftCorrector.computeVisualReference();
+        this.driftCorrector.correctDrift(fusedOrientation, visualReference);
+      }
+    } else {
+      // フォールバック: 相補フィルタなしの場合はIMUのみ使用
+      camera.quaternion.copy(imuOrientation);
     }
+
+    // デバッグ: IMU姿勢更新を確認
+    if (this.showIMUDebug) {
+      const q = camera.quaternion;
+      const stats = this.driftCorrector?.getStatistics();
+      console.log(
+        `IMU: q(${q.x.toFixed(3)}, ${q.y.toFixed(3)}, ${q.z.toFixed(3)}, ${q.w.toFixed(3)}) ` +
+        `stable:${stats?.stableFeatures ?? 0} conf:${stats?.averageConfidence.toFixed(2) ?? 0}`
+      );
+    }
+  }
+
+  /**
+   * ドリフト補正器に特徴点情報を更新
+   */
+  private updateDriftCorrector(features: Feature[]): void {
+    if (!this.driftCorrector) return;
+
+    // 特徴点の3D位置を取得（深度情報がある場合）
+    const depth3DPoints = new Map<string, THREE.Vector3>();
+
+    // フレームプロセッサから深度マップを取得して3D位置を計算
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (planeGroup) {
+      // 平面の中心位置を基準として特徴点の3D位置を推定
+      const planeCenter = new THREE.Vector3();
+      planeGroup.getWorldPosition(planeCenter);
+
+      for (const feature of features) {
+        // 簡易的な3D位置推定（平面上にあると仮定）
+        const normalizedX = (feature.x / 640 - 0.5) * 2;
+        const normalizedY = (feature.y / 480 - 0.5) * 2;
+
+        const position3D = new THREE.Vector3(
+          planeCenter.x + normalizedX * 0.5,
+          planeCenter.y - normalizedY * 0.5,
+          planeCenter.z
+        );
+
+        depth3DPoints.set(feature.id, position3D);
+      }
+    }
+
+    this.driftCorrector.updateFeatures(features, depth3DPoints);
   }
 
   /**
@@ -938,6 +1058,16 @@ export class SPALAM implements IServiceProvider {
     if (this.deviceMotionTracker) {
       this.deviceMotionTracker.dispose();
       this.deviceMotionTracker = null;
+    }
+
+    // Phase 2: 相補フィルタとドリフト補正器を解放
+    if (this.complementaryFilter) {
+      this.complementaryFilter.dispose();
+      this.complementaryFilter = null;
+    }
+    if (this.driftCorrector) {
+      this.driftCorrector.dispose();
+      this.driftCorrector = null;
     }
 
     // ARレンダラーを解放
@@ -1225,6 +1355,19 @@ export class SPALAM implements IServiceProvider {
 
     this.deviceMotionTracker = new DeviceMotionTracker();
 
+    // Phase 2: 相補フィルタとドリフト補正器を初期化
+    this.complementaryFilter = new ComplementaryFilter({
+      alpha: 0.98,
+      minVisualConfidence: 0.3,
+      smoothingFactor: 0.1,
+    });
+
+    this.driftCorrector = new DriftCorrector({
+      resetIntervalMs: 1000,
+      minTrackedFrames: 10,
+      maxStableFeatures: 50,
+    });
+
     this.deviceMotionTracker.addListener((event: DeviceMotionTrackerEvent) => {
       if (event.type === "stateChange") {
         console.log("IMU state changed:", event.state);
@@ -1233,6 +1376,8 @@ export class SPALAM implements IServiceProvider {
         // 姿勢データを受信したらトラッキングを有効化
         if (!this.imuTrackingEnabled) {
           this.imuTrackingEnabled = true;
+          // 平面の回転をIMU座標系に変換（一度だけ）
+          this.adjustPlaneRotationForIMU();
           console.log("IMU tracking enabled (orientation data received)");
         }
       } else if (event.type === "error") {
@@ -1251,7 +1396,7 @@ export class SPALAM implements IServiceProvider {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       if (this.imuTrackingEnabled) {
-        console.log("IMU tracking enabled successfully");
+        console.log("IMU tracking enabled with Visual-Inertial Fusion");
         return true;
       }
 
@@ -1263,6 +1408,35 @@ export class SPALAM implements IServiceProvider {
 
     console.warn("IMU tracking initialization failed");
     return false;
+  }
+
+  /**
+   * IMU有効化時に平面の回転を調整
+   *
+   * 平面は検出時にカメラ回転=identityを前提に設定されている。
+   * IMU有効化時に実際のカメラ回転（IMU姿勢）を適用して、
+   * 平面が画面上で同じ向きに見えるように調整する。
+   */
+  private adjustPlaneRotationForIMU(): void {
+    if (!this.deviceMotionTracker || !this.arRenderer) return;
+
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (!planeGroup) return;
+
+    const imuOrientation = this.deviceMotionTracker.getOrientation();
+    if (!imuOrientation) return;
+
+    // 平面の回転をIMU座標系に変換
+    // 元の回転: R_plane（カメラがidentityの時に設定）
+    // IMU回転: R_imu
+    // 新しい回転: R_imu * R_plane
+    // これにより、IMUで回転したカメラから見た時に同じ向きに見える
+    const currentQuaternion = planeGroup.quaternion.clone();
+    const newQuaternion = imuOrientation.clone().multiply(currentQuaternion);
+
+    planeGroup.quaternion.copy(newQuaternion);
+
+    console.log("Plane rotation adjusted for IMU");
   }
 
   /**

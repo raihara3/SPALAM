@@ -3,11 +3,19 @@ export { FeatureDetector } from './FeatureDetector';
 export { DepthEstimation } from './DepthEstimation';
 export { ARRenderer } from './ARRenderer';
 
-// Tracking (Phase 1: IMU Integration)
+// Tracking (Phase 1: IMU Integration, Phase 2: Visual-Inertial Fusion)
 export {
   DeviceMotionTracker,
   PoseRepresentation,
   IMUInitializer,
+  ComplementaryFilter,
+  DriftCorrector,
+} from './tracking';
+
+export type {
+  ComplementaryFilterOptions,
+  DriftCorrectorOptions,
+  StableFeature,
 } from './tracking';
 
 export type { Feature } from './types/Feature';
