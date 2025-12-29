@@ -719,6 +719,22 @@ export class SPALAM implements IServiceProvider {
       planeHeight
     );
     group.add(planeMesh);
+
+    // 6面異なる色の立方体を追加（平面サイズの7割）
+    const cubeSize = Math.min(planeWidth, planeHeight) * 0.7;
+    const cubeMaterials = [
+      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 }), // right: red
+      new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.8 }), // left: green
+      new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.8 }), // top: blue
+      new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }), // bottom: yellow
+      new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.8 }), // front: magenta
+      new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }), // back: cyan
+    ];
+    const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+    const cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterials);
+    cubeMesh.position.set(0, 0, cubeSize / 2);
+    group.add(cubeMesh);
+
     scene.add(group);
 
     // 位置と回転の調整
