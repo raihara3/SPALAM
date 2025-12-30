@@ -1,4 +1,5 @@
 import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
+import type { DepthModel, DepthProcessor } from "./types/Transformers";
 
 declare global {
   interface Navigator {
@@ -19,8 +20,8 @@ export class DepthEstimation {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
 
-  model: any = null;
-  processor: any = null;
+  model: DepthModel | null = null;
+  processor: DepthProcessor | null = null;
   depthCanvas: HTMLCanvasElement;
   depthContext: CanvasRenderingContext2D | null = null;
   isProcessing: boolean = false;
@@ -61,8 +62,12 @@ export class DepthEstimation {
 
     // モバイルデバイスでは深度推定を無効化（ネットワーク制限により）
     if (isMobile) {
-      console.warn("Depth estimation disabled on mobile devices due to network restrictions");
-      throw new Error("Depth estimation is not supported on mobile devices. The system will use fallback depth calculation.");
+      console.warn(
+        "Depth estimation disabled on mobile devices due to network restrictions"
+      );
+      throw new Error(
+        "Depth estimation is not supported on mobile devices. The system will use fallback depth calculation."
+      );
     }
 
     const model_id = "onnx-community/depth-anything-v2-small";
@@ -95,7 +100,8 @@ export class DepthEstimation {
           console.log("WebGPU available and tested successfully");
           return true;
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
           console.log("WebGPU test failed:", errorMessage);
           return false;
         }
@@ -163,10 +169,10 @@ export class DepthEstimation {
       [this.model, this.processor] = (await Promise.race([
         Promise.all([modelLoadPromise, processorLoadPromise]),
         timeoutPromise,
-      ])) as [any, any];
+      ])) as [DepthModel, DepthProcessor];
 
       // モバイルでは小さいサイズを使用
-      let size = isMobile ? 256 : 504;
+      const size = isMobile ? 256 : 504;
       this.processor.feature_extractor.size = { width: size, height: size };
 
       console.log(
@@ -230,10 +236,13 @@ export class DepthEstimation {
     try {
       const testUrl =
         "https://huggingface.co/api/models/onnx-community/depth-anything-v2-small";
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(testUrl, {
         method: "HEAD",
-        timeout: 5000,
-      } as any);
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`CDN connection test failed: ${response.status}`);
@@ -271,7 +280,7 @@ export class DepthEstimation {
     const inputs = await this.processor(image);
     const { predicted_depth } = await this.model(inputs);
     this.depthMap = predicted_depth.data;
-    const [_bs, oh, ow] = predicted_depth.dims;
+    const [, oh, ow] = predicted_depth.dims;
 
     if (!this.depthMap) return;
 

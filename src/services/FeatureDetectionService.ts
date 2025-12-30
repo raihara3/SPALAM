@@ -10,19 +10,19 @@ import { FeatureDetectorConfig } from "../config/types";
  * 複数のアルゴリズムによる特徴点検出を統合管理
  */
 export class FeatureDetectionService {
-  private cv: any;
+  private cv: typeof cv;
   private config: FeatureDetectorConfig;
   private nextFeatureId: number = 0;
 
-  constructor(cv: any, config: FeatureDetectorConfig) {
-    this.cv = cv;
+  constructor(cvInstance: typeof cv, config: FeatureDetectorConfig) {
+    this.cv = cvInstance;
     this.config = config;
   }
 
   /**
    * 設定されたアルゴリズムで特徴点を検出
    */
-  public detectFeatures(image: any, mask: any): Feature[] {
+  public detectFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const allFeatures: Feature[][] = [];
     const algorithmWeights: number[] = [];
 
@@ -54,8 +54,8 @@ export class FeatureDetectionService {
    * 指定されたアルゴリズムで特徴点検出
    */
   private detectWithAlgorithm(
-    image: any,
-    mask: any,
+    image: cv.Mat,
+    mask: cv.Mat,
     algorithmConfig: AlgorithmConfig
   ): Feature[] {
     switch (algorithmConfig.algorithm) {
@@ -82,7 +82,7 @@ export class FeatureDetectionService {
   /**
    * Harris Corner Detection
    */
-  private detectHarrisFeatures(image: any, _mask: any): Feature[] {
+  private detectHarrisFeatures(image: cv.Mat, _mask: cv.Mat): Feature[] {
     const params = this.config.algorithmParams.harris!;
     const corners = new this.cv.Mat();
 
@@ -133,7 +133,7 @@ export class FeatureDetectionService {
   /**
    * Shi-Tomasi Corner Detection (goodFeaturesToTrack)
    */
-  private detectShiTomasiFeatures(image: any, mask: any): Feature[] {
+  private detectShiTomasiFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config.algorithmParams.shiTomasi!;
     const points = new this.cv.Mat();
 
@@ -166,10 +166,10 @@ export class FeatureDetectionService {
   /**
    * FAST Feature Detection
    */
-  private detectFastFeatures(image: any, mask: any): Feature[] {
+  private detectFastFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config.algorithmParams.fast!;
     const keypoints = new this.cv.KeyPointVector();
-    const detector = new this.cv.FastFeatureDetector_create(
+    const detector = this.cv.FastFeatureDetector_create(
       params.threshold,
       params.nonmaxSuppression,
       params.type
@@ -197,12 +197,12 @@ export class FeatureDetectionService {
   /**
    * ORB Feature Detection
    */
-  private detectOrbFeatures(image: any, mask: any): Feature[] {
+  private detectOrbFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config.algorithmParams.orb!;
     const keypoints = new this.cv.KeyPointVector();
     const descriptors = new this.cv.Mat();
 
-    const detector = new this.cv.ORB_create(
+    const detector = this.cv.ORB_create(
       params.nfeatures,
       params.scaleFactor,
       params.nlevels,
@@ -239,12 +239,12 @@ export class FeatureDetectionService {
   /**
    * SIFT Feature Detection
    */
-  private detectSiftFeatures(image: any, mask: any): Feature[] {
+  private detectSiftFeatures(image: cv.Mat, mask: cv.Mat): Feature[] {
     const params = this.config.algorithmParams.sift!;
     const keypoints = new this.cv.KeyPointVector();
     const descriptors = new this.cv.Mat();
 
-    const detector = new this.cv.SIFT_create(
+    const detector = this.cv.SIFT_create(
       params.nfeatures,
       params.nOctaveLayers,
       params.contrastThreshold,

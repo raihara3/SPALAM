@@ -180,7 +180,8 @@ export class DistanceTracker {
       angularMagnitude < this.stationaryAngularVelocityThreshold;
 
     // Skip if rotating (rotation causes perspective changes, not real scale changes)
-    const isRotating = angularMagnitude >= this.stationaryAngularVelocityThreshold;
+    const isRotating =
+      angularMagnitude >= this.stationaryAngularVelocityThreshold;
 
     return isStationary || isRotating;
   }
@@ -207,8 +208,16 @@ export class DistanceTracker {
       .slice(0, 10);
 
     // Create pairs from stable features
-    for (let i = 0; i < stableFeatures.length && this.featurePairs.size < this.maxPairs; i++) {
-      for (let j = i + 1; j < stableFeatures.length && this.featurePairs.size < this.maxPairs; j++) {
+    for (
+      let i = 0;
+      i < stableFeatures.length && this.featurePairs.size < this.maxPairs;
+      i++
+    ) {
+      for (
+        let j = i + 1;
+        j < stableFeatures.length && this.featurePairs.size < this.maxPairs;
+        j++
+      ) {
         const feature1 = stableFeatures[i];
         const feature2 = stableFeatures[j];
         const pairId = this.createPairId(feature1.id, feature2.id);

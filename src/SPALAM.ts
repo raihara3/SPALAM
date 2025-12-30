@@ -1,6 +1,6 @@
 // lib
 import * as THREE from "three";
-declare const cv: any;
+// cv types are defined in opencv.d.ts
 
 // types
 import {
@@ -14,8 +14,9 @@ import {
   CameraInfo,
   SPALAMError,
   SPALAMErrorType,
-  Feature,
 } from "./types";
+import type { Feature as InternalFeature } from "./types/Feature";
+import type { Feature as APIFeature } from "./types/API";
 
 // modules
 import { ARRenderer } from "./ARRenderer";
@@ -35,7 +36,7 @@ import {
 // utils
 import { CameraController } from "./utils/CameraController";
 import { ServiceContainer } from "./utils/ServiceContainer";
-import { IServiceProvider } from "./interfaces/IServiceProvider";
+import { IServiceProvider } from "./types/ServiceProvider";
 
 // tracking
 import {
@@ -95,7 +96,7 @@ export class SPALAMBuilder {
    * ```
    */
   public features(config: Partial<SPALAMConfig["features"]>): SPALAMBuilder {
-    this.config.features = { ...this.config.features, ...config } as any;
+    this.config.features = { ...this.config.features, ...config } as Partial<SPALAMConfig["features"]> as SPALAMConfig["features"];
     return this;
   }
 
@@ -118,7 +119,7 @@ export class SPALAMBuilder {
    * ```
    */
   public depth(config: Partial<SPALAMConfig["depth"]>): SPALAMBuilder {
-    this.config.depth = { ...this.config.depth, ...config } as any;
+    this.config.depth = { ...this.config.depth, ...config } as Partial<SPALAMConfig["depth"]> as SPALAMConfig["depth"];
     return this;
   }
 
@@ -141,7 +142,7 @@ export class SPALAMBuilder {
    * ```
    */
   public plane(config: Partial<SPALAMConfig["plane"]>): SPALAMBuilder {
-    this.config.plane = { ...this.config.plane, ...config } as any;
+    this.config.plane = { ...this.config.plane, ...config } as Partial<SPALAMConfig["plane"]> as SPALAMConfig["plane"];
     return this;
   }
 
@@ -161,7 +162,7 @@ export class SPALAMBuilder {
    * ```
    */
   public useWebGPU(): SPALAMBuilder {
-    this.config.depth = { ...this.config.depth, device: "webgpu" } as any;
+    this.config.depth = { ...this.config.depth, device: "webgpu" } as Partial<SPALAMConfig["depth"]> as SPALAMConfig["depth"];
     return this;
   }
 
@@ -181,7 +182,7 @@ export class SPALAMBuilder {
    * ```
    */
   public useCPU(): SPALAMBuilder {
-    this.config.depth = { ...this.config.depth, device: "cpu" } as any;
+    this.config.depth = { ...this.config.depth, device: "cpu" } as Partial<SPALAMConfig["depth"]> as SPALAMConfig["depth"];
     return this;
   }
 
@@ -204,8 +205,8 @@ export class SPALAMBuilder {
     this.config.features = {
       ...this.config.features,
       showFeatures: true,
-    } as any;
-    this.config.depth = { ...this.config.depth, showDepth: true } as any;
+    } as Partial<SPALAMConfig["features"]> as SPALAMConfig["features"];
+    this.config.depth = { ...this.config.depth, showDepth: true } as Partial<SPALAMConfig["depth"]> as SPALAMConfig["depth"];
     return this;
   }
 
@@ -337,7 +338,7 @@ export class SPALAM implements IServiceProvider {
   private container: ServiceContainer;
 
   /** イベントリスナー */
-  private eventListeners: Map<keyof SPALAMEvents, Function[]> = new Map();
+  private eventListeners: Map<keyof SPALAMEvents, ((...args: never[]) => void)[]> = new Map();
 
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
@@ -362,7 +363,6 @@ export class SPALAM implements IServiceProvider {
   private gravityAligner: GravityAligner | null = null;
   /** 初期平面スケール */
   private initialPlaneScale: number = 1.0;
-
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -470,7 +470,7 @@ export class SPALAM implements IServiceProvider {
             return true;
           }
           return false;
-        } catch (error) {
+        } catch {
           return false;
         }
       };
@@ -723,12 +723,36 @@ export class SPALAM implements IServiceProvider {
     // 6面異なる色の立方体を追加（平面サイズの7割）
     const cubeSize = Math.min(planeWidth, planeHeight) * 0.7;
     const cubeMaterials = [
-      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 }), // right: red
-      new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.8 }), // left: green
-      new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.8 }), // top: blue
-      new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }), // bottom: yellow
-      new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.8 }), // front: magenta
-      new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }), // back: cyan
+      new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.8,
+      }), // right: red
+      new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        transparent: true,
+        opacity: 0.8,
+      }), // left: green
+      new THREE.MeshBasicMaterial({
+        color: 0x0000ff,
+        transparent: true,
+        opacity: 0.8,
+      }), // top: blue
+      new THREE.MeshBasicMaterial({
+        color: 0xffff00,
+        transparent: true,
+        opacity: 0.8,
+      }), // bottom: yellow
+      new THREE.MeshBasicMaterial({
+        color: 0xff00ff,
+        transparent: true,
+        opacity: 0.8,
+      }), // front: magenta
+      new THREE.MeshBasicMaterial({
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0.8,
+      }), // back: cyan
     ];
     const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
     const cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterials);
@@ -794,7 +818,7 @@ export class SPALAM implements IServiceProvider {
    * @returns 重み付き重心の正規化座標（-1 to 1）、または null
    */
   private computeWeightedCentroid(
-    features: Feature[],
+    features: InternalFeature[],
     minTrackingCount: number = 5
   ): { x: number; y: number } | null {
     const width = this.frameProcessor.getCanvasWidth();
@@ -839,7 +863,7 @@ export class SPALAM implements IServiceProvider {
    * 平面位置を複数の安定特徴点に基づいて更新
    * 重み付き重心を使用して個々の特徴点のノイズを平均化
    */
-  private updateCameraPosition(features: Feature[]): void {
+  private updateCameraPosition(features: InternalFeature[]): void {
     const camera = this.arRenderer!.getCamera();
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
@@ -875,7 +899,7 @@ export class SPALAM implements IServiceProvider {
    * 複数の安定特徴点の重心を使って平面のワールド座標を補正する。
    * カメラはIMUで回転するが、平面は特徴点群の重心に正確に配置される。
    */
-  private updatePlaneWorldPosition(features: Feature[]): void {
+  private updatePlaneWorldPosition(features: InternalFeature[]): void {
     const camera = this.arRenderer!.getCamera();
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
@@ -923,23 +947,18 @@ export class SPALAM implements IServiceProvider {
       // フレーム処理イベントを発火
       const features = this.frameProcessor.getFeatures() || [];
       const centerFeature = this.frameProcessor.getCenterFeature();
+
+      const mapToAPIFeature = (f: InternalFeature, index: number): APIFeature => ({
+        point: { u: f.x, v: f.y },
+        quality: f.score ?? 0.5,
+        trackingCount: f.trackingCount,
+        id: f.id || `feature_${index}`,
+      });
+
       const frameData: FrameData = {
-        features: features.map((f: any, index: number) => ({
-          point: f.point || { x: f.x || 0, y: f.y || 0 },
-          quality: f.quality || 0.5,
-          trackingCount: f.trackingCount || 1,
-          id: f.id || `feature_${index}`,
-        })),
+        features: features.map((f, index) => mapToAPIFeature(f, index)),
         centerFeature: centerFeature
-          ? {
-              point: (centerFeature as any).point || {
-                x: (centerFeature as any).x || 0,
-                y: (centerFeature as any).y || 0,
-              },
-              quality: (centerFeature as any).quality || 0.5,
-              trackingCount: (centerFeature as any).trackingCount || 1,
-              id: (centerFeature as any).id || "center_feature",
-            }
+          ? mapToAPIFeature(centerFeature, 0)
           : null,
         depthMap: null, // getDepthMapは非同期なので、ここでは省略
         timestamp: Date.now(),
@@ -1014,7 +1033,7 @@ export class SPALAM implements IServiceProvider {
       const stats = this.driftCorrector?.getStatistics();
       console.log(
         `IMU: q(${q.x.toFixed(3)}, ${q.y.toFixed(3)}, ${q.z.toFixed(3)}, ${q.w.toFixed(3)}) ` +
-        `stable:${stats?.stableFeatures ?? 0} conf:${stats?.averageConfidence.toFixed(2) ?? 0}`
+          `stable:${stats?.stableFeatures ?? 0} conf:${stats?.averageConfidence.toFixed(2) ?? 0}`
       );
     }
   }
@@ -1022,7 +1041,7 @@ export class SPALAM implements IServiceProvider {
   /**
    * ドリフト補正器に特徴点情報を更新
    */
-  private updateDriftCorrector(features: Feature[]): void {
+  private updateDriftCorrector(features: InternalFeature[]): void {
     if (!this.driftCorrector) return;
 
     // 特徴点の3D位置を取得（深度情報がある場合）
@@ -1056,7 +1075,7 @@ export class SPALAM implements IServiceProvider {
   /**
    * Phase 2.5 トラッキング機能を更新
    */
-  private updatePhase25Tracking(features: Feature[]): void {
+  private updatePhase25Tracking(features: InternalFeature[]): void {
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
@@ -1071,7 +1090,7 @@ export class SPALAM implements IServiceProvider {
 
     // 2. 特徴点アンカーを更新
     if (this.featureAnchor) {
-      const get3DPosition = (feature: Feature): THREE.Vector3 | null => {
+      const get3DPosition = (feature: InternalFeature): THREE.Vector3 | null => {
         // 平面上の3D位置を推定
         const planeCenter = new THREE.Vector3();
         planeGroup.getWorldPosition(planeCenter);
@@ -1169,7 +1188,7 @@ export class SPALAM implements IServiceProvider {
     if (listeners) {
       listeners.forEach((listener) => {
         try {
-          (listener as Function)(...args);
+          listener(...(args as unknown as never[]));
         } catch (error) {
           console.error(`Error in ${event} listener:`, error);
         }
@@ -1568,7 +1587,7 @@ export class SPALAM implements IServiceProvider {
     this.deviceMotionTracker.addListener((event: DeviceMotionTrackerEvent) => {
       if (event.type === "stateChange") {
         console.log("IMU state changed:", event.state);
-        this.emit("imu:stateChange" as any, event);
+        this.emit("imu:stateChange", event);
       } else if (event.type === "orientationUpdate") {
         // 姿勢データを受信したらトラッキングを有効化
         if (!this.imuTrackingEnabled) {
@@ -1590,7 +1609,7 @@ export class SPALAM implements IServiceProvider {
       console.log("IMU permission granted, waiting for orientation data...");
 
       // 短いタイムアウトで最初のイベントを待つ
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       if (this.imuTrackingEnabled) {
         console.log("IMU tracking enabled with Visual-Inertial Fusion");
@@ -1658,8 +1677,7 @@ export class SPALAM implements IServiceProvider {
    */
   public isIMUTracking(): boolean {
     return (
-      this.imuTrackingEnabled &&
-      this.deviceMotionTracker?.isTracking() === true
+      this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking() === true
     );
   }
 

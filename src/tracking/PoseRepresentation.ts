@@ -37,7 +37,7 @@ export class PoseRepresentation {
     if (typeof window !== "undefined" && window.screen?.orientation) {
       this.screenOrientation = window.screen.orientation.angle || 0;
     } else if (typeof window !== "undefined") {
-      this.screenOrientation = window.orientation as number || 0;
+      this.screenOrientation = (window.orientation as number) || 0;
     }
   }
 
@@ -89,9 +89,11 @@ export class PoseRepresentation {
    * @param quaternion Three.jsクォータニオン
    * @returns オイラー角（度）
    */
-  public quaternionToEuler(
-    quaternion: THREE.Quaternion
-  ): { pitch: number; yaw: number; roll: number } {
+  public quaternionToEuler(quaternion: THREE.Quaternion): {
+    pitch: number;
+    yaw: number;
+    roll: number;
+  } {
     const euler = new THREE.Euler().setFromQuaternion(quaternion, "YXZ");
 
     return {
@@ -148,9 +150,10 @@ export class PoseRepresentation {
    * @param gravity 重力ベクトル（デバイス座標系）
    * @returns 傾き角度（ラジアン）
    */
-  public calculateTiltFromGravity(
-    gravity: THREE.Vector3
-  ): { pitch: number; roll: number } {
+  public calculateTiltFromGravity(gravity: THREE.Vector3): {
+    pitch: number;
+    roll: number;
+  } {
     const normalized = gravity.clone().normalize();
 
     const pitch = Math.atan2(-normalized.z, normalized.y);

@@ -27,14 +27,14 @@ export class FrameProcessor {
    * 初期化
    */
   public async initialize(
-    cv: any,
+    cvInstance: typeof cv,
     video: HTMLVideoElement,
     showFeatures: boolean = true,
     showDepth: boolean = true
   ): Promise<void> {
     // 特徴点検出器の初期化
     this.featureDetector = new FeatureDetector({
-      cv,
+      cv: cvInstance,
       video,
       showFeatures,
     });
@@ -55,7 +55,8 @@ export class FrameProcessor {
       this.depthEstimation = null;
 
       // エラータイプ別の処理
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       if (
         errorMessage.includes("not supported on mobile devices") ||
         errorMessage.includes("WASM depth estimation failed") ||

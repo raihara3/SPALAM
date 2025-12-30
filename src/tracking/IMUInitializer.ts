@@ -90,12 +90,10 @@ export class IMUInitializer {
 
     const recentSamples = this.samples.slice(-this.requiredSamples);
 
-    const accelerationVariance = this.calculateAccelerationVariance(
-      recentSamples
-    );
-    const averageAngularVelocity = this.calculateAverageAngularVelocity(
-      recentSamples
-    );
+    const accelerationVariance =
+      this.calculateAccelerationVariance(recentSamples);
+    const averageAngularVelocity =
+      this.calculateAverageAngularVelocity(recentSamples);
 
     return (
       accelerationVariance < this.stationaryVarianceThreshold &&
@@ -184,9 +182,7 @@ export class IMUInitializer {
     averageAcceleration.divideScalar(recentSamples.length);
 
     const magnitude = averageAcceleration.length();
-    if (
-      Math.abs(magnitude - this.gravityMagnitude) > this.gravityTolerance
-    ) {
+    if (Math.abs(magnitude - this.gravityMagnitude) > this.gravityTolerance) {
       throw new Error(
         `Invalid gravity magnitude: ${magnitude} (expected ~${this.gravityMagnitude})`
       );
@@ -223,9 +219,7 @@ export class IMUInitializer {
     }
 
     rotationAxis.normalize();
-    const angle = Math.acos(
-      Math.max(-1, Math.min(1, gravity.dot(worldUp)))
-    );
+    const angle = Math.acos(Math.max(-1, Math.min(1, gravity.dot(worldUp))));
 
     this.initialOrientation = new THREE.Quaternion().setFromAxisAngle(
       rotationAxis,
@@ -279,17 +273,15 @@ export class IMUInitializer {
 
     const recentSamples = this.samples.slice(-this.requiredSamples);
 
-    const accelerationVariance = this.calculateAccelerationVariance(
-      recentSamples
-    );
+    const accelerationVariance =
+      this.calculateAccelerationVariance(recentSamples);
     const varianceScore = Math.max(
       0,
       1 - accelerationVariance / this.stationaryVarianceThreshold
     );
 
-    const averageAngularVelocity = this.calculateAverageAngularVelocity(
-      recentSamples
-    );
+    const averageAngularVelocity =
+      this.calculateAverageAngularVelocity(recentSamples);
     const angularVelocityScore = Math.max(
       0,
       1 - averageAngularVelocity / this.stationaryAngularVelocityThreshold

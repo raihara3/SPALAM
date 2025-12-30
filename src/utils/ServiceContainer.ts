@@ -3,8 +3,8 @@
  * 依存性注入の基本機能のみを提供
  */
 export class ServiceContainer {
-  private services = new Map<string, any>();
-  private factories = new Map<string, () => any>();
+  private services = new Map<string, unknown>();
+  private factories = new Map<string, () => unknown>();
 
   /**
    * サービスインスタンスを登録

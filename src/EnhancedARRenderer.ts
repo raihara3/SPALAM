@@ -2,15 +2,74 @@ import * as THREE from "three";
 // import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { RenderingService } from "./services/RenderingService";
 import { AnimationService } from "./services/AnimationService";
-import { 
-  RenderingConfig, 
-  LightConfig, 
+import {
+  RenderingConfig,
+  LightConfig,
   CameraConfig,
   MaterialConfig,
   RenderingStats,
-  RenderingMode
+  RenderingMode,
+  ShadowMapType,
 } from "./types/RenderingTypes";
 import { ARRendererConfig } from "./config/types";
+
+/**
+ * OrbitControls-like interface for camera control
+ */
+interface CameraControls {
+  update(): void;
+  dispose(): void;
+}
+
+/**
+ * Animation configuration types
+ */
+interface RotationAnimationConfig {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface FloatAnimationConfig {
+  amplitude?: number;
+  frequency?: number;
+}
+
+interface PulseAnimationConfig {
+  minScale?: number;
+  maxScale?: number;
+  speed?: number;
+}
+
+type AnimationConfigUnion = RotationAnimationConfig | FloatAnimationConfig | PulseAnimationConfig;
+
+/**
+ * Fog configuration types
+ */
+interface LinearFogConfig {
+  color: THREE.ColorRepresentation;
+  near: number;
+  far: number;
+}
+
+interface ExponentialFogConfig {
+  color: THREE.ColorRepresentation;
+  density: number;
+}
+
+/**
+ * Custom animation configuration
+ */
+interface CustomAnimationConfig {
+  name: string;
+  target: "position" | "rotation" | "scale";
+  keyframes: Array<{
+    time: number;
+    value: { x?: number; y?: number; z?: number };
+  }>;
+  loop: boolean;
+  duration: number;
+}
 
 /**
  * 拡張ARレンダラー
@@ -19,33 +78,33 @@ import { ARRendererConfig } from "./config/types";
 export class EnhancedARRenderer {
   private width: number;
   private height: number;
-  
+
   // キャンバス
   private canvas: HTMLCanvasElement;
-  
+
   // Three.js コア
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
-  
+
   // サービス
   private renderingService!: RenderingService;
   private animationService!: AnimationService;
-  
+
   // コントロール
-  private controls?: any; // OrbitControls;
-  
+  private controls?: CameraControls;
+
   // 設定
   private config: ARRendererConfig & {
     rendering?: RenderingConfig;
     camera?: CameraConfig;
     lights?: LightConfig;
   };
-  
+
   // レイキャスター（インタラクション用）
   private raycaster: THREE.Raycaster;
   private mouse: THREE.Vector2;
-  
+
   // パフォーマンスモニタ
   private performanceMonitor: {
     enabled: boolean;
@@ -55,7 +114,7 @@ export class EnhancedARRenderer {
   constructor({
     width,
     height,
-    config
+    config,
   }: {
     width: number;
     height: number;
@@ -68,20 +127,20 @@ export class EnhancedARRenderer {
     this.width = width;
     this.height = height;
     this.config = config;
-    
+
     // レイキャスター初期化
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
-    
+
     // キャンバス作成
     this.canvas = this.createCanvas();
-    
+
     // Three.js初期化
     this.initThreeJS();
-    
+
     // サービス初期化
     this.initServices();
-    
+
     // イベントリスナー設定
     this.setupEventListeners();
   }
@@ -97,9 +156,11 @@ export class EnhancedARRenderer {
     canvas.style.left = "0";
     canvas.style.width = "100%";
     canvas.style.height = "100%";
-    canvas.style.pointerEvents = this.config.camera?.controls.enableOrbit ? "auto" : "none";
+    canvas.style.pointerEvents = this.config.camera?.controls.enableOrbit
+      ? "auto"
+      : "none";
     document.body.appendChild(canvas);
-    
+
     return canvas;
   }
 
@@ -109,7 +170,7 @@ export class EnhancedARRenderer {
   private initThreeJS(): void {
     // シーン作成
     this.scene = new THREE.Scene();
-    
+
     // カメラ設定
     const cameraConfig = this.config.camera || {
       fov: this.config.fov || 75,
@@ -124,29 +185,29 @@ export class EnhancedARRenderer {
         autoRotate: false,
         autoRotateSpeed: 2,
         enableDamping: true,
-        dampingFactor: 0.05
-      }
+        dampingFactor: 0.05,
+      },
     };
-    
+
     this.camera = new THREE.PerspectiveCamera(
       cameraConfig.fov,
       this.width / this.height,
       cameraConfig.near,
       cameraConfig.far
     );
-    
+
     this.camera.position.set(
       cameraConfig.position.x,
       cameraConfig.position.y,
       cameraConfig.position.z
     );
-    
+
     this.camera.lookAt(
       cameraConfig.lookAt.x,
       cameraConfig.lookAt.y,
       cameraConfig.lookAt.z
     );
-    
+
     // レンダラー設定
     const renderingConfig = this.config.rendering || {
       mode: RenderingMode.STANDARD,
@@ -156,32 +217,35 @@ export class EnhancedARRenderer {
       clearAlpha: 0,
       shadows: {
         enabled: true,
-        type: "pcf" as any,
-        resolution: 2048
+        type: ShadowMapType.PCF,
+        resolution: 2048,
       },
       postProcessing: {
         enabled: false,
-        effects: []
+        effects: [],
       },
       performance: {
         enableLOD: true,
         frustumCulling: true,
         occlusionCulling: false,
-        enableInstancing: true
-      }
+        enableInstancing: true,
+      },
     };
-    
+
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
       alpha: true,
       antialias: renderingConfig.antialias,
-      powerPreference: "high-performance"
+      powerPreference: "high-performance",
     });
-    
+
     this.renderer.setSize(this.width, this.height);
     this.renderer.setPixelRatio(renderingConfig.pixelRatio);
-    this.renderer.setClearColor(renderingConfig.clearColor, renderingConfig.clearAlpha);
-    
+    this.renderer.setClearColor(
+      renderingConfig.clearColor,
+      renderingConfig.clearAlpha
+    );
+
     // コントロール設定（将来的に実装）
     if (cameraConfig.controls.enableOrbit) {
       // TODO: OrbitControlsを実装
@@ -202,53 +266,53 @@ export class EnhancedARRenderer {
       clearAlpha: 0,
       shadows: {
         enabled: true,
-        type: "pcf" as any,
-        resolution: 2048
+        type: ShadowMapType.PCF,
+        resolution: 2048,
       },
       postProcessing: {
         enabled: false,
-        effects: []
+        effects: [],
       },
       performance: {
         enableLOD: true,
         frustumCulling: true,
         occlusionCulling: false,
-        enableInstancing: true
-      }
+        enableInstancing: true,
+      },
     };
-    
+
     this.renderingService = new RenderingService(
       this.renderer,
       this.scene,
       this.camera,
       renderingConfig
     );
-    
+
     // アニメーションサービス
     const animationConfig = {
       enabled: true,
       default: {
         rotation: {
           enabled: false,
-          speed: { x: 0, y: 0.01, z: 0 }
+          speed: { x: 0, y: 0.01, z: 0 },
         },
         float: {
           enabled: false,
           amplitude: 0.1,
-          frequency: 1
+          frequency: 1,
         },
         pulse: {
           enabled: false,
           minScale: 0.9,
           maxScale: 1.1,
-          speed: 2
-        }
+          speed: 2,
+        },
       },
-      custom: []
+      custom: [],
     };
-    
+
     this.animationService = new AnimationService(animationConfig);
-    
+
     // デフォルトライト設定
     if (this.config.lights) {
       this.renderingService.setupLights(this.config.lights);
@@ -258,17 +322,17 @@ export class EnhancedARRenderer {
         ambient: {
           enabled: true,
           color: 0xffffff,
-          intensity: 0.6
+          intensity: 0.6,
         },
         directional: {
           enabled: true,
           color: 0xffffff,
           intensity: 0.8,
           position: { x: 5, y: 5, z: 5 },
-          castShadow: true
+          castShadow: true,
         },
         points: [],
-        spots: []
+        spots: [],
       };
       this.renderingService.setupLights(defaultLights);
     }
@@ -280,14 +344,20 @@ export class EnhancedARRenderer {
   private setupEventListeners(): void {
     // ウィンドウリサイズ
     window.addEventListener("resize", () => this.handleResize());
-    
+
     // マウスイベント（インタラクション用）
-    this.canvas.addEventListener("mousemove", (event) => this.handleMouseMove(event));
+    this.canvas.addEventListener("mousemove", (event) =>
+      this.handleMouseMove(event)
+    );
     this.canvas.addEventListener("click", (event) => this.handleClick(event));
-    
+
     // タッチイベント
-    this.canvas.addEventListener("touchstart", (event) => this.handleTouchStart(event));
-    this.canvas.addEventListener("touchmove", (event) => this.handleTouchMove(event));
+    this.canvas.addEventListener("touchstart", (event) =>
+      this.handleTouchStart(event)
+    );
+    this.canvas.addEventListener("touchmove", (event) =>
+      this.handleTouchMove(event)
+    );
   }
 
   /**
@@ -296,10 +366,10 @@ export class EnhancedARRenderer {
   private handleResize(): void {
     this.width = window.innerWidth;
     this.height = window.innerHeight;
-    
+
     this.camera.aspect = this.width / this.height;
     this.camera.updateProjectionMatrix();
-    
+
     this.renderer.setSize(this.width, this.height);
   }
 
@@ -316,17 +386,22 @@ export class EnhancedARRenderer {
    */
   private handleClick(event: MouseEvent): void {
     this.handleMouseMove(event);
-    
+
     // レイキャスト
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.scene.children, true);
-    
+    const intersects = this.raycaster.intersectObjects(
+      this.scene.children,
+      true
+    );
+
     if (intersects.length > 0) {
       const object = intersects[0].object;
       // カスタムイベントを発火
-      this.canvas.dispatchEvent(new CustomEvent("objectClick", {
-        detail: { object, point: intersects[0].point }
-      }));
+      this.canvas.dispatchEvent(
+        new CustomEvent("objectClick", {
+          detail: { object, point: intersects[0].point },
+        })
+      );
     }
   }
 
@@ -373,10 +448,10 @@ export class EnhancedARRenderer {
     geometry: THREE.BufferGeometry,
     materialConfig?: MaterialConfig
   ): THREE.Mesh {
-    const material = materialConfig 
+    const material = materialConfig
       ? this.renderingService.createMaterial(materialConfig)
       : new THREE.MeshStandardMaterial({ color: 0xffffff });
-    
+
     return new THREE.Mesh(geometry, material);
   }
 
@@ -403,7 +478,12 @@ export class EnhancedARRenderer {
     material: THREE.Material,
     count: number
   ): THREE.InstancedMesh {
-    return this.renderingService.createInstancedMesh(id, geometry, material, count);
+    return this.renderingService.createInstancedMesh(
+      id,
+      geometry,
+      material,
+      count
+    );
   }
 
   /**
@@ -413,24 +493,35 @@ export class EnhancedARRenderer {
     id: string,
     object: THREE.Object3D,
     type: "rotation" | "float" | "pulse",
-    config?: any
+    config?: AnimationConfigUnion
   ): void {
     switch (type) {
-      case "rotation":
-        this.animationService.addRotationAnimation(id, object, config);
+      case "rotation": {
+        const rotationConfig = config as RotationAnimationConfig | undefined;
+        this.animationService.addRotationAnimation(id, object, rotationConfig);
         break;
-      case "float":
-        this.animationService.addFloatAnimation(id, object, config?.amplitude, config?.frequency);
-        break;
-      case "pulse":
-        this.animationService.addPulseAnimation(
-          id, 
-          object, 
-          config?.minScale, 
-          config?.maxScale, 
-          config?.speed
+      }
+      case "float": {
+        const floatConfig = config as FloatAnimationConfig | undefined;
+        this.animationService.addFloatAnimation(
+          id,
+          object,
+          floatConfig?.amplitude,
+          floatConfig?.frequency
         );
         break;
+      }
+      case "pulse": {
+        const pulseConfig = config as PulseAnimationConfig | undefined;
+        this.animationService.addPulseAnimation(
+          id,
+          object,
+          pulseConfig?.minScale,
+          pulseConfig?.maxScale,
+          pulseConfig?.speed
+        );
+        break;
+      }
     }
   }
 
@@ -440,7 +531,7 @@ export class EnhancedARRenderer {
   public addCustomAnimation(
     id: string,
     object: THREE.Object3D,
-    config: any
+    config: CustomAnimationConfig
   ): void {
     this.animationService.addCustomAnimation(id, object, config);
   }
@@ -448,7 +539,7 @@ export class EnhancedARRenderer {
   /**
    * GLTFモデルをロード（将来的に実装）
    */
-  public async loadGLTF(url: string): Promise<any> {
+  public async loadGLTF(url: string): Promise<THREE.Group | null> {
     // TODO: GLTFLoaderを実装
     console.log(`GLTF loading will be implemented in future version: ${url}`);
     return Promise.resolve(null);
@@ -457,7 +548,10 @@ export class EnhancedARRenderer {
   /**
    * スクリーンショットを撮影
    */
-  public captureScreenshot(format: "png" | "jpeg" = "png", quality: number = 0.9): string {
+  public captureScreenshot(
+    format: "png" | "jpeg" = "png",
+    quality: number = 0.9
+  ): string {
     this.renderer.render(this.scene, this.camera);
     return this.canvas.toDataURL(`image/${format}`, quality);
   }
@@ -465,10 +559,12 @@ export class EnhancedARRenderer {
   /**
    * パフォーマンスモニタリングを有効化
    */
-  public enablePerformanceMonitor(callback: (stats: RenderingStats) => void): void {
+  public enablePerformanceMonitor(
+    callback: (stats: RenderingStats) => void
+  ): void {
     this.performanceMonitor = {
       enabled: true,
-      callback
+      callback,
     };
   }
 
@@ -482,11 +578,15 @@ export class EnhancedARRenderer {
   /**
    * フォグを設定
    */
-  public setFog(type: "linear" | "exponential", config: any): void {
+  public setFog(type: "linear", config: LinearFogConfig): void;
+  public setFog(type: "exponential", config: ExponentialFogConfig): void;
+  public setFog(type: "linear" | "exponential", config: LinearFogConfig | ExponentialFogConfig): void {
     if (type === "linear") {
-      this.scene.fog = new THREE.Fog(config.color, config.near, config.far);
+      const linearConfig = config as LinearFogConfig;
+      this.scene.fog = new THREE.Fog(linearConfig.color, linearConfig.near, linearConfig.far);
     } else {
-      this.scene.fog = new THREE.FogExp2(config.color, config.density);
+      const expConfig = config as ExponentialFogConfig;
+      this.scene.fog = new THREE.FogExp2(expConfig.color, expConfig.density);
     }
   }
 
@@ -503,15 +603,15 @@ export class EnhancedARRenderer {
   public render(): void {
     // アニメーション更新
     this.animationService.update();
-    
+
     // コントロール更新
     if (this.controls) {
       this.controls.update();
     }
-    
+
     // 最適化されたレンダリング
     this.renderingService.render();
-    
+
     // パフォーマンスモニタリング
     if (this.performanceMonitor.enabled && this.performanceMonitor.callback) {
       const stats = this.renderingService.getStats();
@@ -562,30 +662,30 @@ export class EnhancedARRenderer {
   public dispose(): void {
     // アニメーションクリア
     this.animationService.clear();
-    
+
     // レンダリングサービスのクリーンアップ
     this.renderingService.dispose();
-    
+
     // シーンのクリーンアップ
     this.scene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
         if (Array.isArray(child.material)) {
-          child.material.forEach(m => m.dispose());
+          child.material.forEach((m) => m.dispose());
         } else {
           child.material.dispose();
         }
       }
     });
-    
+
     // レンダラーのクリーンアップ
     this.renderer.dispose();
-    
+
     // コントロールのクリーンアップ
     if (this.controls) {
       this.controls.dispose();
     }
-    
+
     // キャンバスを削除
     this.canvas.remove();
   }

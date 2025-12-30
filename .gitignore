@@ -136,3 +136,6 @@ dist
 .pnp.*
 
 memo/
+
+# TypeDoc generated documentation
+docs/

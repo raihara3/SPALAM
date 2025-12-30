@@ -25,19 +25,31 @@
     "lint": "eslint 'src/**/*.{ts,tsx}'",
     "lint:fix": "eslint 'src/**/*.{ts,tsx}' --fix",
     "format": "prettier --write 'src/**/*.{ts,tsx,css}'",
-    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}'"
+    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "docs": "typedoc"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@typescript-eslint/eslint-plugin": "^8.33.1",
     "@typescript-eslint/parser": "^8.33.1",
     "@vitejs/plugin-basic-ssl": "^2.1.0",
+    "@vitest/coverage-v8": "^4.0.16",
+    "@vitest/ui": "^4.0.16",
     "eslint": "^9.28.0",
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-prettier": "^5.4.1",
+    "happy-dom": "^20.0.11",
     "prettier": "^3.5.3",
     "terser": "^5.41.0",
+    "typedoc": "^0.28.15",
     "typescript": "~5.7.2",
-    "vite": "^6.2.0"
+    "typescript-eslint": "^8.50.1",
+    "vite": "^6.2.0",
+    "vitest": "^4.0.16"
   },
   "dependencies": {
     "@huggingface/transformers": "3.0.0",

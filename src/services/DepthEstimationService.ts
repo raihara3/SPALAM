@@ -5,6 +5,11 @@ import {
   DepthMapResult,
 } from "../types/DepthEstimationModel";
 import { DepthEstimationConfig } from "../config/types";
+import type {
+  DepthModel,
+  DepthProcessor,
+  DepthTensor,
+} from "../types/Transformers";
 
 /**
  * 深度推定サービス
@@ -12,8 +17,8 @@ import { DepthEstimationConfig } from "../config/types";
  */
 export class DepthEstimationService {
   private config: DepthEstimationConfig;
-  private models: Map<string, any> = new Map();
-  private processors: Map<string, any> = new Map();
+  private models: Map<string, DepthModel> = new Map();
+  private processors: Map<string, DepthProcessor> = new Map();
   private currentModelId: string;
   private isProcessing: boolean = false;
 
@@ -57,8 +62,9 @@ export class DepthEstimationService {
       const inputSize = this.getInputSizeForModel(targetModelId);
       // 入力サイズを設定（プロセッサの構造に依存）
       try {
-        if (processor.feature_extractor) {
-          (processor.feature_extractor as any).size = {
+        const typedProcessor = processor as unknown as DepthProcessor;
+        if (typedProcessor.feature_extractor) {
+          typedProcessor.feature_extractor.size = {
             width: inputSize,
             height: inputSize,
           };
@@ -68,8 +74,11 @@ export class DepthEstimationService {
       }
 
       // 保存
-      this.models.set(targetModelId, model);
-      this.processors.set(targetModelId, processor);
+      this.models.set(targetModelId, model as unknown as DepthModel);
+      this.processors.set(
+        targetModelId,
+        processor as unknown as DepthProcessor
+      );
       this.currentModelId = targetModelId;
 
       console.log(`Loaded depth estimation model: ${targetModelId}`);
@@ -82,7 +91,7 @@ export class DepthEstimationService {
   /**
    * エンジン設定を取得
    */
-  private getEngineConfig(): any {
+  private getEngineConfig(): Record<string, unknown> {
     const pipeline = this.config.pipeline;
 
     if (!pipeline?.engine) {
@@ -248,13 +257,13 @@ export class DepthEstimationService {
    * 深度出力を処理
    */
   private processDepthOutput(
-    predicted_depth: any,
+    predicted_depth: DepthTensor,
     _originalWidth: number,
     _originalHeight: number,
     inferenceTime: number
   ): DepthMapResult {
     const depthData = predicted_depth.data as Float32Array;
-    const [_bs, height, width] = predicted_depth.dims;
+    const [, height, width] = predicted_depth.dims;
 
     // 最小値と最大値を計算
     let minDepth = Infinity;

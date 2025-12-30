@@ -1,6 +1,10 @@
-import * as THREE from "three";
-import { Point2D, Point3D, PlaneModel } from "../types";
-import { PlaneEstimationConfig } from "../config/types";
+import type {
+  PlaneModel,
+  Feature,
+  PlaneFittingResult,
+  Point3D,
+} from "../types";
+import type { PlaneEstimationConfig } from "../config/types";
 import { defaultConfig } from "../config/defaults";
 import fitPlaneRANSAC, {
   filterByDepth,
@@ -13,21 +17,11 @@ import { weightedPlaneFit2D } from "../helpers/weightedPlaneFit2D";
 import sampleDepthAtFeaturePoints from "../helpers/sampleDepthAtFeaturePoints";
 import backProjectPoints, {
   getCameraIntrinsics,
-  CameraIntrinsics,
+  type CameraIntrinsics,
 } from "../helpers/backProjectPoints";
-import { Feature } from "../types";
+import * as THREE from "three";
 
-/**
- * 平面推定結果
- */
-export interface PlaneFittingResult {
-  hull2D: Point2D[];
-  hull3D: Point3D[];
-  P0: Point3D;
-  uVec: THREE.Vector3;
-  vVec: THREE.Vector3;
-  normal: THREE.Vector3;
-}
+export type { PlaneFittingResult } from "../types";
 
 /**
  * 平面フィッティングサービス
@@ -68,7 +62,10 @@ export class PlaneFittingService {
   /**
    * カメラ内部パラメータを取得（キャッシュ付き）
    */
-  private getIntrinsics(videoWidth: number, videoHeight: number): CameraIntrinsics {
+  private getIntrinsics(
+    videoWidth: number,
+    videoHeight: number
+  ): CameraIntrinsics {
     if (
       this.cachedIntrinsics &&
       this.cachedVideoSize?.width === videoWidth &&

@@ -46,7 +46,7 @@ export interface ModelConfig {
     std: number[];
   };
   /** モデル固有の設定 */
-  modelSpecific?: Record<string, any>;
+  modelSpecific?: Record<string, unknown>;
 }
 
 /**
@@ -60,7 +60,7 @@ export interface EngineConfig {
   /** 精度設定 */
   precision?: "fp32" | "fp16" | "int8";
   /** エンジン固有の設定 */
-  engineOptions?: Record<string, any>;
+  engineOptions?: Record<string, unknown>;
 }
 
 /**
