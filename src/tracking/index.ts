@@ -10,6 +10,7 @@ export {
 export { DistanceTracker } from "./DistanceTracker";
 export { FeatureAnchor } from "./FeatureAnchor";
 export { GravityAligner, PlaneType } from "./GravityAligner";
+export { DescriptorMatcher } from "./DescriptorMatcher";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -19,3 +20,7 @@ export type {
   ReprojectionResult,
 } from "./FeatureAnchor";
 export type { GravityAlignerOptions, AlignmentResult } from "./GravityAligner";
+export type {
+  DescriptorMatcherOptions,
+  MatchStatistics,
+} from "./DescriptorMatcher";
