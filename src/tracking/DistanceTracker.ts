@@ -28,6 +28,10 @@ export interface DistanceTrackerOptions {
   stationaryAccelerationThreshold?: number;
   /** Angular velocity threshold for stationary detection (deg/s). Default: 5.0 */
   stationaryAngularVelocityThreshold?: number;
+  /** Maximum scale change per frame (ratio). Default: 0.05 (5%) */
+  maxScaleChangePerFrame?: number;
+  /** Outlier threshold in IQR multiples. Default: 1.5 */
+  outlierThreshold?: number;
 }
 
 /**
@@ -57,6 +61,8 @@ export class DistanceTracker {
   private deviceMotionTracker: DeviceMotionTracker | null;
   private stationaryAccelerationThreshold: number;
   private stationaryAngularVelocityThreshold: number;
+  private maxScaleChangePerFrame: number;
+  private outlierThreshold: number;
 
   constructor(options?: DistanceTrackerOptions) {
     this.minTrackedFrames = options?.minTrackedFrames ?? 10;
@@ -67,6 +73,8 @@ export class DistanceTracker {
       options?.stationaryAccelerationThreshold ?? 0.3;
     this.stationaryAngularVelocityThreshold =
       options?.stationaryAngularVelocityThreshold ?? 5.0;
+    this.maxScaleChangePerFrame = options?.maxScaleChangePerFrame ?? 0.05;
+    this.outlierThreshold = options?.outlierThreshold ?? 1.5;
   }
 
   /**
@@ -122,8 +130,8 @@ export class DistanceTracker {
     // Add new pairs if needed
     this.addNewPairs(features);
 
-    // Calculate scale from stable pairs
-    const rawScale = this.calculateScale();
+    // Calculate scale from stable pairs with outlier rejection
+    const rawScale = this.calculateScaleWithOutlierRejection();
     if (rawScale !== null) {
       // Check if scale update should be skipped (stationary or rotating)
       if (this.shouldSkipScaleUpdate()) {
@@ -131,8 +139,11 @@ export class DistanceTracker {
         return this.currentScale;
       }
 
-      // Apply raw scale directly (no smoothing)
-      this.currentScale = rawScale;
+      // Apply rate limiting to prevent sudden jumps
+      const scaleDiff = rawScale - this.currentScale;
+      const maxChange = this.currentScale * this.maxScaleChangePerFrame;
+      const clampedDiff = Math.max(-maxChange, Math.min(maxChange, scaleDiff));
+      this.currentScale = this.currentScale + clampedDiff;
 
       // Update depth estimate
       this.currentDepth = this.initialDepth / this.currentScale;
@@ -195,9 +206,21 @@ export class DistanceTracker {
 
   /**
    * Add new feature pairs
+   * Only adds pairs when tracking is stable (enough existing stable pairs)
    */
   private addNewPairs(features: Feature[]): void {
     if (this.featurePairs.size >= this.maxPairs) {
+      return;
+    }
+
+    // Check if we should add new pairs
+    // Only add when we have at least some stable pairs or we have none at all
+    const stablePairCount = this.getStablePairCount();
+    const hasNoPairs = this.featurePairs.size === 0;
+    const hasStableTracking = stablePairCount >= 3;
+
+    // Don't add new pairs during unstable tracking (except when starting fresh)
+    if (!hasNoPairs && !hasStableTracking) {
       return;
     }
 
@@ -244,9 +267,10 @@ export class DistanceTracker {
   }
 
   /**
-   * Calculate scale factor from tracked pairs
+   * Calculate scale factor from tracked pairs with outlier rejection
+   * Uses IQR-based outlier detection for robustness
    */
-  private calculateScale(): number | null {
+  private calculateScaleWithOutlierRejection(): number | null {
     const stablePairs = Array.from(this.featurePairs.values()).filter(
       (pair) => pair.trackedFrames >= this.minTrackedFrames
     );
@@ -255,19 +279,60 @@ export class DistanceTracker {
       return null;
     }
 
-    // Calculate weighted average scale
+    // Calculate scale for each pair
+    const scaleValues = stablePairs.map((pair) => ({
+      scale: pair.currentDistance / pair.initialDistance,
+      weight: pair.trackedFrames,
+    }));
+
+    // If only one pair, use it directly
+    if (scaleValues.length === 1) {
+      return scaleValues[0].scale;
+    }
+
+    // Sort by scale value for percentile calculation
+    const sortedScales = [...scaleValues].sort((a, b) => a.scale - b.scale);
+
+    // Calculate median
+    const medianIndex = Math.floor(sortedScales.length / 2);
+    const median =
+      sortedScales.length % 2 === 0
+        ? (sortedScales[medianIndex - 1].scale + sortedScales[medianIndex].scale) / 2
+        : sortedScales[medianIndex].scale;
+
+    // If few pairs, use median directly without outlier rejection
+    if (sortedScales.length < 4) {
+      return median;
+    }
+
+    // Calculate IQR (Interquartile Range)
+    const q1Index = Math.floor(sortedScales.length * 0.25);
+    const q3Index = Math.floor(sortedScales.length * 0.75);
+    const q1 = sortedScales[q1Index].scale;
+    const q3 = sortedScales[q3Index].scale;
+    const iqr = q3 - q1;
+
+    // Define outlier bounds
+    const lowerBound = q1 - this.outlierThreshold * iqr;
+    const upperBound = q3 + this.outlierThreshold * iqr;
+
+    // Filter out outliers and calculate weighted average
     let totalWeight = 0;
     let weightedScaleSum = 0;
 
-    for (const pair of stablePairs) {
-      const scale = pair.currentDistance / pair.initialDistance;
-      const weight = pair.trackedFrames;
-
-      weightedScaleSum += scale * weight;
-      totalWeight += weight;
+    for (const item of scaleValues) {
+      if (item.scale >= lowerBound && item.scale <= upperBound) {
+        weightedScaleSum += item.scale * item.weight;
+        totalWeight += item.weight;
+      }
     }
 
-    return totalWeight > 0 ? weightedScaleSum / totalWeight : null;
+    // If all values were filtered out (shouldn't happen), return median
+    if (totalWeight === 0) {
+      return median;
+    }
+
+    return weightedScaleSum / totalWeight;
   }
 
   /**
