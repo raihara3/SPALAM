@@ -16,6 +16,9 @@ export { PoseEstimator } from "./PoseEstimator";
 export { PnPSolver } from "./PnPSolver";
 export { Triangulator } from "./Triangulator";
 export { LocalBundleAdjustment } from "./LocalBundleAdjustment";
+export { IMUPreintegration } from "./IMUPreintegration";
+export { ScaleEstimator } from "./ScaleEstimator";
+export { VisualInertialOptimizer } from "./VisualInertialOptimizer";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -34,3 +37,9 @@ export type { PoseEstimatorOptions } from "./PoseEstimator";
 export type { PnPSolverOptions } from "./PnPSolver";
 export type { TriangulatorOptions } from "./Triangulator";
 export type { LocalBundleAdjustmentOptions } from "./LocalBundleAdjustment";
+export type { IMUPreintegrationOptions } from "./IMUPreintegration";
+export type { ScaleEstimatorOptions } from "./ScaleEstimator";
+export type {
+  VisualInertialOptimizerOptions,
+  IMUConstraint,
+} from "./VisualInertialOptimizer";
