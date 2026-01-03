@@ -10,6 +10,12 @@ export {
 export { DistanceTracker } from "./DistanceTracker";
 export { FeatureAnchor } from "./FeatureAnchor";
 export { GravityAligner, PlaneType } from "./GravityAligner";
+export { DescriptorMatcher } from "./DescriptorMatcher";
+export { MotionModel } from "./MotionModel";
+export { PoseEstimator } from "./PoseEstimator";
+export { PnPSolver } from "./PnPSolver";
+export { Triangulator } from "./Triangulator";
+export { LocalBundleAdjustment } from "./LocalBundleAdjustment";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -19,3 +25,12 @@ export type {
   ReprojectionResult,
 } from "./FeatureAnchor";
 export type { GravityAlignerOptions, AlignmentResult } from "./GravityAligner";
+export type {
+  DescriptorMatcherOptions,
+  MatchStatistics,
+} from "./DescriptorMatcher";
+export type { MotionModelOptions } from "./MotionModel";
+export type { PoseEstimatorOptions } from "./PoseEstimator";
+export type { PnPSolverOptions } from "./PnPSolver";
+export type { TriangulatorOptions } from "./Triangulator";
+export type { LocalBundleAdjustmentOptions } from "./LocalBundleAdjustment";

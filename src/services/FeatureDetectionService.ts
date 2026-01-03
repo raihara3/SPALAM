@@ -13,6 +13,7 @@ export class FeatureDetectionService {
   private cv: typeof cv;
   private config: FeatureDetectorConfig;
   private nextFeatureId: number = 0;
+  private currentDescriptors: cv.Mat | null = null;
 
   constructor(cvInstance: typeof cv, config: FeatureDetectorConfig) {
     this.cv = cvInstance;
@@ -232,7 +233,11 @@ export class FeatureDetectionService {
 
     detector.delete();
     keypoints.delete();
-    descriptors.delete();
+
+    // Store descriptors for pose estimation (caller manages lifecycle)
+    this.disposeDescriptors();
+    this.currentDescriptors = descriptors;
+
     return this.limitAndSortFeatures(features);
   }
 
@@ -271,7 +276,11 @@ export class FeatureDetectionService {
 
     detector.delete();
     keypoints.delete();
-    descriptors.delete();
+
+    // Store descriptors for pose estimation (caller manages lifecycle)
+    this.disposeDescriptors();
+    this.currentDescriptors = descriptors;
+
     return this.limitAndSortFeatures(features);
   }
 
@@ -434,5 +443,24 @@ export class FeatureDetectionService {
    */
   public updateConfig(config: FeatureDetectorConfig): void {
     this.config = config;
+  }
+
+  /**
+   * Get current descriptors for pose estimation
+   * Caller should NOT delete the returned Mat
+   */
+  public getDescriptors(): cv.Mat | null {
+    return this.currentDescriptors;
+  }
+
+  /**
+   * Dispose stored descriptors
+   * Call when descriptors are no longer needed
+   */
+  public disposeDescriptors(): void {
+    if (this.currentDescriptors) {
+      this.currentDescriptors.delete();
+      this.currentDescriptors = null;
+    }
   }
 }
