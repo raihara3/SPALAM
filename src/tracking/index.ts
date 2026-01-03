@@ -11,6 +11,8 @@ export { DistanceTracker } from "./DistanceTracker";
 export { FeatureAnchor } from "./FeatureAnchor";
 export { GravityAligner, PlaneType } from "./GravityAligner";
 export { DescriptorMatcher } from "./DescriptorMatcher";
+export { MotionModel } from "./MotionModel";
+export { PoseEstimator } from "./PoseEstimator";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -24,3 +26,5 @@ export type {
   DescriptorMatcherOptions,
   MatchStatistics,
 } from "./DescriptorMatcher";
+export type { MotionModelOptions } from "./MotionModel";
+export type { PoseEstimatorOptions } from "./PoseEstimator";

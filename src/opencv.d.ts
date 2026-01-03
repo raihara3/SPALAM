@@ -428,6 +428,7 @@ declare namespace cv {
     method?: number,
     prob?: number,
     threshold?: number,
+    maxIters?: number,
     mask?: Mat
   ): Mat;
 
