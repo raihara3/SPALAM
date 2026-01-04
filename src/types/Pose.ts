@@ -229,3 +229,87 @@ export interface PoseEstimationStatistics {
   /** Processing time in milliseconds */
   processingTimeMs: number;
 }
+
+/**
+ * IMU biases for accelerometer and gyroscope
+ */
+export interface IMUBiases {
+  /** Accelerometer bias in m/s² */
+  accelerometerBias: THREE.Vector3;
+  /** Gyroscope bias in rad/s */
+  gyroscopeBias: THREE.Vector3;
+}
+
+/**
+ * IMU measurement data
+ */
+export interface IMUMeasurement {
+  /** Acceleration in device frame (m/s²) */
+  acceleration: THREE.Vector3;
+  /** Angular velocity in device frame (rad/s) */
+  angularVelocity: THREE.Vector3;
+  /** Timestamp in milliseconds */
+  timestamp: number;
+}
+
+/**
+ * Result from IMU preintegration between two keyframes
+ */
+export interface PreintegrationResult {
+  /** Position change in body frame (meters) */
+  deltaPosition: THREE.Vector3;
+  /** Velocity change in body frame (m/s) */
+  deltaVelocity: THREE.Vector3;
+  /** Rotation change as quaternion */
+  deltaRotation: THREE.Quaternion;
+  /** Covariance matrix (9x9 for position, velocity, rotation) */
+  covariance: number[];
+  /** Total integration time in seconds */
+  integrationTime: number;
+  /** Number of integrated measurements */
+  measurementCount: number;
+}
+
+/**
+ * Scale estimation state
+ */
+export type ScaleState =
+  | "uninitialized"
+  | "initializing"
+  | "converging"
+  | "converged"
+  | "lost";
+
+/**
+ * Result from Visual-Inertial optimization
+ */
+export interface VIOOptimizationResult {
+  /** Optimized scale factor */
+  scale: number;
+  /** Refined gravity direction in world frame */
+  gravityDirection: THREE.Vector3;
+  /** Updated IMU biases */
+  biases: IMUBiases;
+  /** Optimized keyframe poses */
+  poses: Map<number, CameraPose>;
+  /** Optimized velocities per keyframe */
+  velocities: Map<number, THREE.Vector3>;
+  /** Final optimization cost */
+  cost: number;
+  /** Whether optimization converged */
+  converged: boolean;
+}
+
+/**
+ * IMU noise parameters
+ */
+export interface IMUNoiseParameters {
+  /** Accelerometer noise density (m/s²/√Hz) */
+  accelerometerNoiseDensity: number;
+  /** Gyroscope noise density (rad/s/√Hz) */
+  gyroscopeNoiseDensity: number;
+  /** Accelerometer random walk (m/s³/√Hz) */
+  accelerometerRandomWalk: number;
+  /** Gyroscope random walk (rad/s²/√Hz) */
+  gyroscopeRandomWalk: number;
+}
