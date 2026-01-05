@@ -1018,9 +1018,12 @@ export class SPALAM implements IServiceProvider {
       this.updateCameraFromIMU();
     }
 
-    // 特徴点が失われている場合、Frustum判定で再検出をトリガー
-    if (this.frameProcessor.isReady() && this.frameProcessor.hasLostFeatures()) {
-      this.checkFrustumForRedetection();
+    // centerFeatureがnull、または全特徴点が失われている場合、Frustum判定で再検出をトリガー
+    if (this.frameProcessor.isReady() && this.stateManager.isPlaneDetected()) {
+      const currentCenterFeature = this.frameProcessor.getCenterFeature();
+      if (this.frameProcessor.hasLostFeatures() || !currentCenterFeature) {
+        this.checkFrustumForRedetection();
+      }
     }
 
     // 常に特徴点検出は実行（カメラ映像の更新のため）
@@ -1086,11 +1089,10 @@ export class SPALAM implements IServiceProvider {
   private readonly frustum = new THREE.Frustum();
   private readonly frustumMatrix = new THREE.Matrix4();
   private frustumDebugOverlay: HTMLDivElement | null = null;
-  private hasLeftFrustum: boolean = false; // 一度画角外に出たかどうか
 
   /**
    * Frustum判定でARオブジェクトが画角内にあるかチェックし、再検出をトリガー
-   * 再検出は、オブジェクトが中央40%×40%の領域に入ったときのみ行う
+   * centerFeatureがnullでオブジェクトが中央60%×60%の領域にあれば再検出を許可
    */
   private checkFrustumForRedetection(): void {
     try {
@@ -1149,26 +1151,21 @@ export class SPALAM implements IServiceProvider {
       // スクリーン座標に変換（NDC: -1 to 1）
       const screenPosition = planePosition.clone().project(camera);
 
-      // 中央領域の判定（横40%×縦60%）
-      // NDC座標系: 横40% → ±0.2、縦60% → ±0.3
-      const centerThresholdX = 0.2; // 40% / 2 = 0.2
-      const centerThresholdY = 0.3; // 60% / 2 = 0.3
+      // 中央領域の判定（横60%×縦60%）
+      // NDC座標系: 60% → ±0.3
+      const centerThreshold = 0.3; // 60% / 2 = 0.3
       const isInCenterRegion =
-        Math.abs(screenPosition.x) <= centerThresholdX &&
-        Math.abs(screenPosition.y) <= centerThresholdY;
+        Math.abs(screenPosition.x) <= centerThreshold &&
+        Math.abs(screenPosition.y) <= centerThreshold;
 
       // デバッグ表示
       this.frustumDebugOverlay.innerHTML = [
         `Frustum: ${isInFrustum ? "IN VIEW" : "OUT OF VIEW"}`,
         `Center: ${isInCenterRegion ? "YES" : "NO"} (${screenPosition.x.toFixed(2)}, ${screenPosition.y.toFixed(2)})`,
-        `hasLeftFrustum: ${this.hasLeftFrustum}`,
       ].join("<br>");
 
-      if (!isInFrustum) {
-        // 画角外に出たことを記録
-        this.hasLeftFrustum = true;
-      } else if (this.hasLeftFrustum && isInCenterRegion) {
-        // 一度画角外に出た後、中央領域に入った場合のみ再検出を許可
+      if (isInFrustum && isInCenterRegion) {
+        // オブジェクトが画角内かつ中央領域にあれば再検出を許可
         this.frustumDebugOverlay.innerHTML += "<br><b>→ REDETECT!</b>";
 
         // オブジェクト原点のスクリーン座標をターゲットとして設定
@@ -1181,7 +1178,6 @@ export class SPALAM implements IServiceProvider {
 
         this.frameProcessor.allowRedetection();
         this.pendingReposition = true; // 再配置待ちフラグを設定
-        this.hasLeftFrustum = false; // フラグをリセット
       }
     } catch (error) {
       if (this.frustumDebugOverlay) {
