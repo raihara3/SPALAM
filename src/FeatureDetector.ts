@@ -13,27 +13,36 @@ export class FeatureDetector {
   private readonly blockSize: number = 3; // 特徴点検出のための近傍領域のサイズ。奇数である必要がある
   private readonly useHarrisDetector: boolean = false; // Harrisコーナー検出器を使用するかどうか
   private readonly k: number = 0.04; // Harrisコーナー検出器のパラメータ。一般的に0.04から0.06の範囲で使用される
+  private readonly disableRedetection: boolean = true; // 初回検出後の再検出を無効化するか
 
   private prevGray: cv.Mat | null = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
   private nextFeatureId: number = 0;
+  private redetectionAllowed: boolean = false; // 外部から再検出が許可されているか
 
   trackedFeatures: Feature[] = []; // トラッキングされた特徴点
   centerFeature: Feature | null = null; // 中心特徴点
+  private debugOverlay: HTMLDivElement | null = null; // デバッグ表示用
+  private targetPosition: { x: number; y: number } | null = null; // 再配置時のターゲット座標
+  private drawFeaturesEnabled: boolean = false; // 特徴点描画の有効/無効フラグ
+  private trackingStarted: boolean = false; // 追跡が開始されたかどうか
 
   constructor({
     cv: cvInstance,
     video,
     canvas = null,
     showFeatures = false,
+    disableRedetection = true,
   }: {
     cv: typeof cv;
     video: HTMLVideoElement;
     canvas?: HTMLCanvasElement | null;
     showFeatures: boolean;
+    disableRedetection?: boolean;
   }) {
     this.cv = cvInstance;
     this.video = video;
+    this.disableRedetection = disableRedetection;
 
     this.canvas = canvas || document.createElement("canvas");
     this.canvas.id = "featureCanvas";
@@ -45,13 +54,43 @@ export class FeatureDetector {
     if (showFeatures) {
       document.body.appendChild(this.canvas);
     }
+
+    // デバッグオーバーレイを作成
+    this.debugOverlay = document.createElement("div");
+    this.debugOverlay.id = "featureDebugOverlay";
+    this.debugOverlay.style.cssText = `
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.7);
+      color: #0f0;
+      font-family: monospace;
+      font-size: 14px;
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 9999;
+      pointer-events: none;
+    `;
+    document.body.appendChild(this.debugOverlay);
+
     this.render();
+  }
+
+  private updateDebugOverlay(info: Record<string, unknown>): void {
+    if (!this.debugOverlay) return;
+    const lines = Object.entries(info).map(([k, v]) => `${k}: ${v}`);
+    this.debugOverlay.innerHTML = lines.join("<br>");
   }
 
   public render() {
     this.ctx.drawImage(this.video, 0, 0);
-    const features = this.detectAndTrackFeatures();
-    this.drawFeatures(features);
+    try {
+      const features = this.detectAndTrackFeatures();
+      this.drawFeatures(features);
+    } catch (error) {
+      console.error("Feature detection error:", error);
+      // エラーが発生しても映像は更新される
+    }
   }
 
   private generateFeatureId(): string {
@@ -66,12 +105,12 @@ export class FeatureDetector {
     const W = this.canvas.width;
     const H = this.canvas.height;
 
-    // 2) マスクを作成（中央40%×40%だけ検出許可）
+    // 2) マスクを作成（中央60%×60%だけ検出許可）
     const mask = this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
-    const roiX = Math.floor(W * 0.3);
-    const roiY = Math.floor(H * 0.3);
-    const roiW = Math.floor(W * 0.4);
-    const roiH = Math.floor(H * 0.4);
+    const roiX = Math.floor(W * 0.2);
+    const roiY = Math.floor(H * 0.2);
+    const roiW = Math.floor(W * 0.6);
+    const roiH = Math.floor(H * 0.6);
     mask
       .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
       .setTo(new this.cv.Scalar(255));
@@ -113,7 +152,69 @@ export class FeatureDetector {
         return features;
       }
 
-      // 5) オプティカルフローで追跡
+      // 5) 追跡する特徴点がない場合の処理
+      if (this.prevFeatures.length === 0) {
+        this.updateDebugOverlay({
+          status: "LOST",
+          redetectionAllowed: this.redetectionAllowed,
+          features: 0,
+        });
+
+        // 外部から再検出が許可されていない場合は待機
+        if (!this.redetectionAllowed) {
+          this.prevGray.delete();
+          this.prevGray = gray.clone();
+          this.trackedFeatures = [];
+          return [];
+        }
+
+        // 再検出を実行
+        const points = new this.cv.Mat();
+        this.cv.goodFeaturesToTrack(
+          gray,
+          points,
+          this.maxCorners,
+          this.qualityLevel,
+          this.minDistance,
+          mask,
+          this.blockSize,
+          this.useHarrisDetector,
+          this.k
+        );
+
+        const features: Feature[] = [];
+        for (let i = 0; i < points.rows; i++) {
+          features.push({
+            x: points.data32F[i * 2],
+            y: points.data32F[i * 2 + 1],
+            trackingCount: 1,
+            id: this.generateFeatureId(),
+          });
+        }
+        points.delete();
+
+        // 特徴点が検出された場合のみ状態をリセット
+        if (features.length > 0) {
+          this.updateDebugOverlay({
+            status: "REDETECTED",
+            features: features.length,
+          });
+          this.redetectionAllowed = false; // 再検出完了後はフラグをリセット
+          this.prevFeatures = features;
+          this.prevGray.delete();
+          this.prevGray = gray.clone();
+          this.trackedFeatures = features;
+          return features;
+        }
+
+        // 特徴点が検出されなかった場合は引き続き待機
+        this.prevGray.delete();
+        this.prevGray = gray.clone();
+        this.trackedFeatures = [];
+        return [];
+      }
+
+      // 6) オプティカルフローで追跡
       const prevPoints = new this.cv.Mat(
         this.prevFeatures.length,
         1,
@@ -155,8 +256,11 @@ export class FeatureDetector {
       nextPoints.delete();
       status.delete();
 
-      // 6) 追跡点が少なければ追加検出
-      if (trackedFeatures.length < this.maxCorners * 0.3) {
+      // 7) 追跡点が少なければ追加検出（disableRedetection が true の場合はスキップ）
+      if (
+        !this.disableRedetection &&
+        trackedFeatures.length < this.maxCorners * 0.3
+      ) {
         const points = new this.cv.Mat();
         this.cv.goodFeaturesToTrack(
           gray,
@@ -181,12 +285,18 @@ export class FeatureDetector {
         points.delete();
       }
 
-      // 7) フレーム更新
+      // 8) フレーム更新
       this.prevGray.delete();
       this.prevGray = gray.clone();
       this.prevFeatures = trackedFeatures;
 
       this.trackedFeatures = trackedFeatures;
+
+      this.updateDebugOverlay({
+        status: "TRACKING",
+        features: trackedFeatures.length,
+      });
+
       return trackedFeatures;
     } finally {
       // 必ず解放
@@ -202,15 +312,57 @@ export class FeatureDetector {
       this.prevGray = null;
     }
     this.prevFeatures = [];
+    this.redetectionAllowed = false;
+    this.trackingStarted = false;
+    this.centerFeature = null;
+  }
+
+  /**
+   * 特徴点が失われているかどうかを返す
+   */
+  public hasLostFeatures(): boolean {
+    return this.prevGray !== null && this.prevFeatures.length === 0;
+  }
+
+  /**
+   * 再検出を許可する（外部から呼び出し）
+   * Frustum判定などで画角内にオブジェクトが入ったときに呼び出す
+   */
+  public allowRedetection(): void {
+    this.redetectionAllowed = true;
+  }
+
+  /**
+   * 再配置時のターゲット座標を設定
+   * 設定された座標に最も近い特徴点がcenterFeatureとして選択される
+   * @param x スクリーンX座標（ピクセル）
+   * @param y スクリーンY座標（ピクセル）
+   */
+  public setTargetPosition(x: number, y: number): void {
+    this.targetPosition = { x, y };
+  }
+
+  /**
+   * ターゲット座標をクリア（画面中央を使用するようにリセット）
+   */
+  public clearTargetPosition(): void {
+    this.targetPosition = null;
   }
 
   /**
    * 特徴点の描画
    */
   private drawFeatures(features: Feature[]): void {
+    // centerFeatureの選択は常に実行（描画の有無に関わらず必要）
     if (this.trackedFeatures) {
       this.findNearestStableFeature(this.trackedFeatures);
     }
+
+    // 描画が無効の場合はスキップ
+    if (!this.drawFeaturesEnabled) {
+      return;
+    }
+
     features.forEach((feature) => {
       const isCenter =
         this.centerFeature && feature.id === this.centerFeature.id;
@@ -223,31 +375,60 @@ export class FeatureDetector {
   }
 
   /**
-   * 画面中央に最も近い安定した特徴点を見つける
+   * 特徴点描画の有効/無効を設定
+   */
+  public setDrawFeaturesEnabled(enabled: boolean): void {
+    this.drawFeaturesEnabled = enabled;
+  }
+
+  /**
+   * 特徴点描画が有効かどうかを取得
+   */
+  public isDrawFeaturesEnabled(): boolean {
+    return this.drawFeaturesEnabled;
+  }
+
+  /**
+   * ターゲット座標に最も近い安定した特徴点を見つける
+   * ターゲットが設定されていない場合は画面中央を使用
    */
   private findNearestStableFeature(features: Feature[]): Feature | null {
-    const centerX = this.canvas.width / 2;
-    const centerY = this.canvas.height / 2;
-    let nearestFeature: Feature | null = null;
-    let minDistance = Infinity;
+    // 追跡が開始済みで centerFeature が null の場合、
+    // 明示的な再配置要求（targetPosition）がない限り新しい特徴点を探さない
+    if (this.trackingStarted && !this.centerFeature && !this.targetPosition) {
+      return null;
+    }
 
-    // 現在の中心特徴点が有効な場合はそれを継続して使用
-    if (this.centerFeature) {
+    // 現在の中心特徴点が存在し、ターゲット座標が設定されていない場合（通常の追跡中）
+    if (this.centerFeature && !this.targetPosition) {
       const currentFeature = features.find(
         (f) => f.id === this.centerFeature!.id && this.isFeatureValid(f)
       );
       if (currentFeature) {
+        // 現在の centerFeature が有効なら継続使用
         this.centerFeature = currentFeature;
         return currentFeature;
+      } else {
+        // centerFeature が無効になった場合は null にする
+        // 自動で新しい特徴点を探さない（オブジェクトは固定位置に留まる）
+        this.centerFeature = null;
+        return null;
       }
     }
 
-    // 新しい中心特徴点を探す
+    // 以下は初回検出時 または 再配置時（targetPosition が設定されている場合）のみ実行
+    // ターゲット座標が設定されている場合はそれを使用、なければ画面中央
+    const targetX = this.targetPosition?.x ?? this.canvas.width / 2;
+    const targetY = this.targetPosition?.y ?? this.canvas.height / 2;
+    let nearestFeature: Feature | null = null;
+    let minDistance = Infinity;
+
+    // ターゲット座標に最も近い特徴点を探す
     features.forEach((feature) => {
       if (!this.isFeatureValid(feature)) return;
 
       const distance = Math.sqrt(
-        Math.pow(feature.x - centerX, 2) + Math.pow(feature.y - centerY, 2)
+        Math.pow(feature.x - targetX, 2) + Math.pow(feature.y - targetY, 2)
       );
 
       if (distance < minDistance) {
@@ -259,6 +440,11 @@ export class FeatureDetector {
     // 新しい特徴点が見つかった場合、それを中心特徴点として設定
     if (nearestFeature) {
       this.centerFeature = nearestFeature;
+      this.trackingStarted = true;
+      // ターゲット座標をクリア（再配置完了）
+      if (this.targetPosition) {
+        this.targetPosition = null;
+      }
     } else {
       this.centerFeature = null;
     }

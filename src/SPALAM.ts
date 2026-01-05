@@ -54,6 +54,9 @@ import { SPALAMConfig } from "./config/types";
 import { mergeWithDefaults } from "./config/defaults";
 import { getEnvConfig } from "./config/environment";
 
+// helpers
+import { getCameraIntrinsics } from "./helpers/backProjectPoints";
+
 /**
  * Fluent API用の設定ビルダー
  *
@@ -363,6 +366,8 @@ export class SPALAM implements IServiceProvider {
   private gravityAligner: GravityAligner | null = null;
   /** 初期平面スケール */
   private initialPlaneScale: number = 1.0;
+  /** 再配置待ちフラグ（オブジェクトをcenterFeatureの位置に移動する必要がある） */
+  private pendingReposition: boolean = false;
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -590,6 +595,10 @@ export class SPALAM implements IServiceProvider {
 
     // Three.jsの座標系: -Zがカメラの前方なので、深度値を負にする
     const p0WS = camera.localToWorld(new THREE.Vector3(P0.x, P0.y, -P0.z));
+
+    console.log("[InitialPlacement] P0:", P0.x, P0.y, P0.z);
+    console.log("[InitialPlacement] worldPosition:", p0WS.x, p0WS.y, p0WS.z);
+
     group.position.copy(p0WS);
 
     const worldU = uVecCS.clone().normalize();
@@ -860,31 +869,52 @@ export class SPALAM implements IServiceProvider {
   }
 
   /**
-   * 平面位置を複数の安定特徴点に基づいて更新
-   * 重み付き重心を使用して個々の特徴点のノイズを平均化
+   * 重心が中央領域内にあるかチェック
+   * 中央領域外の場合は平面位置を更新しない（オブジェクトがついてこないようにする）
+   *
+   * @param centroid 正規化重心座標（-1 to 1）
+   * @param thresholdX X方向の閾値（デフォルト: 0.6 = 画面の60%）
+   * @param thresholdY Y方向の閾値（デフォルト: 0.6 = 画面の60%）
+   * @returns 中央領域内にある場合true
    */
-  private updateCameraPosition(features: InternalFeature[]): void {
-    const camera = this.arRenderer!.getCamera();
+  private isCentroidInCenterRegion(
+    centroid: { x: number; y: number },
+    thresholdX: number = 0.6,
+    thresholdY: number = 0.6
+  ): boolean {
+    return (
+      Math.abs(centroid.x) <= thresholdX && Math.abs(centroid.y) <= thresholdY
+    );
+  }
+
+  /**
+   * IMU無効時: centerFeatureの位置に基づいて平面位置を更新
+   * centerFeature（黄色い特徴点）の位置に平面を配置する
+   */
+  private updateCameraPosition(centerFeature: InternalFeature): void {
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
     if (!planeResult || !planeGroup) return;
 
-    // 複数特徴点の重み付き重心を計算
-    const centroid = this.computeWeightedCentroid(features);
-    if (!centroid) return;
+    // ビデオサイズを取得（カメラ内部パラメータ計算に必要）
+    const videoWidth = this.video?.videoWidth || 640;
+    const videoHeight = this.video?.videoHeight || 480;
 
-    // 深度（初期検出時の値を使用）
-    const depth = Math.abs(planeResult.P0.z);
+    // カメラ内部パラメータを取得（repositionToCenterFeatureと同じ方法）
+    const intrinsics = getCameraIntrinsics(
+      this.config.plane.cameraIntrinsics,
+      videoWidth,
+      videoHeight
+    );
 
-    // カメラのFoVから3D位置を計算
-    const fovRadians = (camera.fov * Math.PI) / 180;
-    const tanHalfFov = Math.tan(fovRadians / 2);
+    // 深度（初期検出時のP0.zを使用）
+    const depth = planeResult.P0.z;
 
-    // カメラ座標系での位置
-    const x = centroid.x * tanHalfFov * camera.aspect * depth;
-    const y = centroid.y * tanHalfFov * depth;
-    const z = -depth;
+    // backProjectPointsと同じロジックで2D→3D変換
+    const x = ((centerFeature.x - intrinsics.cx) * depth) / intrinsics.fx;
+    const y = -((centerFeature.y - intrinsics.cy) * depth) / intrinsics.fy;
+    const z = -depth; // Three.jsの座標系: -Zがカメラの前方
 
     // ワールド座標に変換（カメラは原点固定）
     const targetPosition = new THREE.Vector3(x, y, z);
@@ -894,40 +924,88 @@ export class SPALAM implements IServiceProvider {
   }
 
   /**
-   * IMU有効時: 視覚情報から平面のワールド位置を更新
+   * IMU有効時: centerFeatureの位置から平面のワールド位置を更新
    *
-   * 複数の安定特徴点の重心を使って平面のワールド座標を補正する。
-   * カメラはIMUで回転するが、平面は特徴点群の重心に正確に配置される。
+   * centerFeature（黄色い特徴点）の位置を使って平面のワールド座標を補正する。
+   * カメラはIMUで回転するが、平面はcenterFeatureに正確に配置される。
    */
-  private updatePlaneWorldPosition(features: InternalFeature[]): void {
+  private updatePlaneWorldPosition(centerFeature: InternalFeature): void {
     const camera = this.arRenderer!.getCamera();
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
     if (!planeResult || !planeGroup) return;
 
-    // 複数特徴点の重み付き重心を計算
-    const centroid = this.computeWeightedCentroid(features);
-    if (!centroid) return;
+    // ビデオサイズを取得（カメラ内部パラメータ計算に必要）
+    const videoWidth = this.video?.videoWidth || 640;
+    const videoHeight = this.video?.videoHeight || 480;
 
-    // 深度（初期検出時の値を使用）
-    const depth = Math.abs(planeResult.P0.z);
+    // カメラ内部パラメータを取得（repositionToCenterFeatureと同じ方法）
+    const intrinsics = getCameraIntrinsics(
+      this.config.plane.cameraIntrinsics,
+      videoWidth,
+      videoHeight
+    );
 
-    // カメラのFoVから3D位置を計算（カメラローカル座標系）
-    const fovRadians = (camera.fov * Math.PI) / 180;
-    const tanHalfFov = Math.tan(fovRadians / 2);
+    // 深度（初期検出時のP0.zを使用）
+    const depth = planeResult.P0.z;
 
-    // カメラ座標系での位置
-    const localX = centroid.x * tanHalfFov * camera.aspect * depth;
-    const localY = centroid.y * tanHalfFov * depth;
-    const localZ = -depth;
+    // backProjectPointsと同じロジックで2D→3D変換
+    const x = ((centerFeature.x - intrinsics.cx) * depth) / intrinsics.fx;
+    const y = -((centerFeature.y - intrinsics.cy) * depth) / intrinsics.fy;
+    const z = depth;
 
-    // カメラローカル座標をワールド座標に変換
-    const localPosition = new THREE.Vector3(localX, localY, localZ);
-    const worldPosition = localPosition.applyQuaternion(camera.quaternion);
+    // ワールド座標に変換（Three.jsの座標系: -Zがカメラの前方）
+    const targetPosition = camera.localToWorld(new THREE.Vector3(x, y, -z));
 
     // スムーズに追従
-    planeGroup.position.lerp(worldPosition, 0.5);
+    planeGroup.position.lerp(targetPosition, 0.5);
+  }
+
+  /**
+   * 再配置時にオブジェクトをcenterFeatureの位置に即座に配置
+   * 初期配置時と同じロジック（backProjectPoints + adjustMeshTransform）を使用
+   */
+  private repositionToCenterFeature(centerFeature: InternalFeature): void {
+    const camera = this.arRenderer!.getCamera();
+    const planeGroup = this.stateManager.getPlaneGroup();
+    const planeResult = this.stateManager.getPlaneResult();
+
+    if (!planeResult || !planeGroup) return;
+
+    // ビデオサイズを取得（カメラ内部パラメータ計算に必要）
+    const videoWidth = this.video?.videoWidth || 640;
+    const videoHeight = this.video?.videoHeight || 480;
+
+    // カメラ内部パラメータを取得（初期配置時と同じ方法）
+    const intrinsics = getCameraIntrinsics(
+      this.config.plane.cameraIntrinsics,
+      videoWidth,
+      videoHeight
+    );
+
+    // 深度（初期検出時のP0.zを使用）
+    const depth = planeResult.P0.z;
+
+    // backProjectPointsと同じロジックで2D→3D変換
+    // x = ((point.x - cx) * z) / fx
+    // y = -((point.y - cy) * z) / fy （Y軸反転）
+    const x = ((centerFeature.x - intrinsics.cx) * depth) / intrinsics.fx;
+    const y = -((centerFeature.y - intrinsics.cy) * depth) / intrinsics.fy;
+    const z = depth;
+
+    // adjustMeshTransformと同じロジックでワールド座標に変換
+    // Three.jsの座標系: -Zがカメラの前方なので、深度値を負にする
+    const p0WS = camera.localToWorld(new THREE.Vector3(x, y, -z));
+
+    console.log("[Reposition] centerFeature:", centerFeature.x, centerFeature.y);
+    console.log("[Reposition] intrinsics:", intrinsics);
+    console.log("[Reposition] depth:", depth);
+    console.log("[Reposition] backProjected (x,y,z):", x, y, z);
+    console.log("[Reposition] worldPosition:", p0WS.x, p0WS.y, p0WS.z);
+
+    // 即座に配置（lerpなし）
+    planeGroup.position.copy(p0WS);
   }
 
   /**
@@ -938,6 +1016,11 @@ export class SPALAM implements IServiceProvider {
     // IMUトラッキングが有効な場合、カメラの姿勢を更新
     if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
       this.updateCameraFromIMU();
+    }
+
+    // 特徴点が失われている場合、Frustum判定で再検出をトリガー
+    if (this.frameProcessor.isReady() && this.frameProcessor.hasLostFeatures()) {
+      this.checkFrustumForRedetection();
     }
 
     // 常に特徴点検出は実行（カメラ映像の更新のため）
@@ -976,13 +1059,19 @@ export class SPALAM implements IServiceProvider {
       }
 
       // 平面が検出済みで、特徴点が存在する場合
-      if (this.stateManager.isPlaneDetected() && features.length > 0) {
-        if (this.imuTrackingEnabled) {
-          // IMU有効時: 視覚情報で平面のワールド位置を補正
-          this.updatePlaneWorldPosition(features);
+      if (this.stateManager.isPlaneDetected() && features.length > 0 && centerFeature) {
+        // 再配置待ちフラグがセットされていて、centerFeatureが存在する場合は
+        // オブジェクトをcenterFeatureの位置に即座に配置
+        if (this.pendingReposition) {
+          this.repositionToCenterFeature(centerFeature);
+          this.pendingReposition = false;
+          // 再配置直後は位置更新をスキップ（上書きを防ぐ）
+        } else if (this.imuTrackingEnabled) {
+          // IMU有効時: centerFeatureの位置で平面のワールド位置を補正
+          this.updatePlaneWorldPosition(centerFeature);
         } else {
-          // IMU無効時: 従来通りカメラ位置を更新（平面が特徴点に追従）
-          this.updateCameraPosition(features);
+          // IMU無効時: centerFeatureの位置でカメラ位置を更新
+          this.updateCameraPosition(centerFeature);
         }
       }
     }
@@ -991,6 +1080,114 @@ export class SPALAM implements IServiceProvider {
       this.arRenderer.render();
     }
     this.animationFrameId = requestAnimationFrame(() => this.render());
+  }
+
+  // Frustum判定用のキャッシュ（毎フレーム new を避ける）
+  private readonly frustum = new THREE.Frustum();
+  private readonly frustumMatrix = new THREE.Matrix4();
+  private frustumDebugOverlay: HTMLDivElement | null = null;
+  private hasLeftFrustum: boolean = false; // 一度画角外に出たかどうか
+
+  /**
+   * Frustum判定でARオブジェクトが画角内にあるかチェックし、再検出をトリガー
+   * 再検出は、オブジェクトが中央40%×40%の領域に入ったときのみ行う
+   */
+  private checkFrustumForRedetection(): void {
+    try {
+      // デバッグオーバーレイを初期化
+      if (!this.frustumDebugOverlay) {
+        this.frustumDebugOverlay = document.createElement("div");
+        this.frustumDebugOverlay.style.cssText = `
+          position: fixed;
+          top: 80px;
+          left: 10px;
+          background: rgba(0,0,0,0.7);
+          color: #ff0;
+          font-family: monospace;
+          font-size: 14px;
+          padding: 10px;
+          border-radius: 5px;
+          z-index: 9999;
+          pointer-events: none;
+        `;
+        document.body.appendChild(this.frustumDebugOverlay);
+      }
+
+      if (!this.arRenderer) {
+        this.frustumDebugOverlay.innerHTML = "Frustum: No renderer";
+        return;
+      }
+
+      const planeGroup = this.stateManager.getPlaneGroup();
+      if (!planeGroup) {
+        this.frustumDebugOverlay.innerHTML = "Frustum: No planeGroup";
+        return;
+      }
+
+      const camera = this.arRenderer.getCamera();
+      if (!camera) {
+        this.frustumDebugOverlay.innerHTML = "Frustum: No camera";
+        return;
+      }
+
+      // カメラとオブジェクトの行列を更新
+      camera.updateMatrixWorld();
+      planeGroup.updateMatrixWorld();
+
+      // Frustum を更新
+      this.frustumMatrix.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse
+      );
+      this.frustum.setFromProjectionMatrix(this.frustumMatrix);
+
+      // planeGroup のワールド位置を取得して Frustum 内にあるかチェック
+      const planePosition = new THREE.Vector3();
+      planeGroup.getWorldPosition(planePosition);
+      const isInFrustum = this.frustum.containsPoint(planePosition);
+
+      // スクリーン座標に変換（NDC: -1 to 1）
+      const screenPosition = planePosition.clone().project(camera);
+
+      // 中央領域の判定（横40%×縦60%）
+      // NDC座標系: 横40% → ±0.2、縦60% → ±0.3
+      const centerThresholdX = 0.2; // 40% / 2 = 0.2
+      const centerThresholdY = 0.3; // 60% / 2 = 0.3
+      const isInCenterRegion =
+        Math.abs(screenPosition.x) <= centerThresholdX &&
+        Math.abs(screenPosition.y) <= centerThresholdY;
+
+      // デバッグ表示
+      this.frustumDebugOverlay.innerHTML = [
+        `Frustum: ${isInFrustum ? "IN VIEW" : "OUT OF VIEW"}`,
+        `Center: ${isInCenterRegion ? "YES" : "NO"} (${screenPosition.x.toFixed(2)}, ${screenPosition.y.toFixed(2)})`,
+        `hasLeftFrustum: ${this.hasLeftFrustum}`,
+      ].join("<br>");
+
+      if (!isInFrustum) {
+        // 画角外に出たことを記録
+        this.hasLeftFrustum = true;
+      } else if (this.hasLeftFrustum && isInCenterRegion) {
+        // 一度画角外に出た後、中央領域に入った場合のみ再検出を許可
+        this.frustumDebugOverlay.innerHTML += "<br><b>→ REDETECT!</b>";
+
+        // オブジェクト原点のスクリーン座標をターゲットとして設定
+        // NDC座標（-1 to 1）をピクセル座標に変換
+        const canvasWidth = this.frameProcessor.getCanvasWidth();
+        const canvasHeight = this.frameProcessor.getCanvasHeight();
+        const targetX = ((screenPosition.x + 1) / 2) * canvasWidth;
+        const targetY = ((1 - screenPosition.y) / 2) * canvasHeight; // Y軸反転
+        this.frameProcessor.setTargetPosition(targetX, targetY);
+
+        this.frameProcessor.allowRedetection();
+        this.pendingReposition = true; // 再配置待ちフラグを設定
+        this.hasLeftFrustum = false; // フラグをリセット
+      }
+    } catch (error) {
+      if (this.frustumDebugOverlay) {
+        this.frustumDebugOverlay.innerHTML = `Frustum: Error - ${error}`;
+      }
+    }
   }
 
   /**
@@ -1074,12 +1271,19 @@ export class SPALAM implements IServiceProvider {
 
   /**
    * Phase 2.5 トラッキング機能を更新
+   * 重心が中央領域外の場合は更新しない（オブジェクトがついてこない）
    */
   private updatePhase25Tracking(features: InternalFeature[]): void {
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
 
     if (!planeGroup || !planeResult) return;
+
+    // 重心が中央領域外の場合は更新をスキップ
+    const centroid = this.computeWeightedCentroid(features);
+    if (!centroid || !this.isCentroidInCenterRegion(centroid)) {
+      return;
+    }
 
     // 1. 距離トラッカーを更新してスケールを計算
     if (this.distanceTracker) {
@@ -1491,6 +1695,24 @@ export class SPALAM implements IServiceProvider {
    */
   public isPlaneDetected(): boolean {
     return this.stateManager.isPlaneDetected();
+  }
+
+  /**
+   * 特徴点描画の有効/無効を設定
+   *
+   * @param enabled - 有効にする場合true、無効にする場合false
+   * @returns SPALAMインスタンス（メソッドチェーン用）
+   */
+  public setDrawFeaturesEnabled(enabled: boolean): SPALAM {
+    this.frameProcessor.setDrawFeaturesEnabled(enabled);
+    return this;
+  }
+
+  /**
+   * 特徴点描画が有効かどうかを取得
+   */
+  public isDrawFeaturesEnabled(): boolean {
+    return this.frameProcessor.isDrawFeaturesEnabled();
   }
 
   /**
