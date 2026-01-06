@@ -773,12 +773,55 @@ export class SPALAM implements IServiceProvider {
     // 位置と回転の調整
     this.adjustMeshTransform(group, P0, uVec, vVec, normal);
 
+    // 画面サイズに対して60%の大きさになるように初期スケールを計算
+    const initialScale = this.computeScreenBasedInitialScale(P0.z, cubeSize);
+    group.scale.set(initialScale, initialScale, initialScale);
+    this.initialPlaneScale = initialScale;
+
     // 状態マネージャーに保存
     this.stateManager.setPlaneGroup(group);
     this.arRenderer?.setCameraPosition(0, 0, 0);
 
     // Phase 2.5: トラッキング品質改善機能を初期化
     this.initializePhase25Tracking(result);
+  }
+
+  /**
+   * 画面サイズに対して一定の大きさになるように初期スケールを計算
+   *
+   * カメラのFOVとオブジェクトまでの距離から、画面の指定割合を占めるスケールを計算する。
+   *
+   * @param distance オブジェクトまでの距離
+   * @param objectSize オブジェクトの現在のサイズ
+   * @param screenRatio 画面に対するオブジェクトの割合（デフォルト: 0.15 = 15%）
+   * @returns 適用すべきスケール値
+   */
+  private computeScreenBasedInitialScale(
+    distance: number,
+    objectSize: number,
+    screenRatio: number = 0.15
+  ): number {
+    if (!this.arRenderer) return 1.0;
+
+    const camera = this.arRenderer.getCamera();
+    const fov = camera.fov;
+
+    // 視錐台の高さを計算: visibleHeight = 2 * tan(FOV/2) * distance
+    const fovRadians = THREE.MathUtils.degToRad(fov);
+    const visibleHeight = 2 * Math.tan(fovRadians / 2) * Math.abs(distance);
+
+    // 画面の指定割合のサイズを計算
+    const targetSize = visibleHeight * screenRatio;
+
+    // 現在のオブジェクトサイズに対するスケールを計算
+    const scale = targetSize / objectSize;
+
+    console.log(
+      `[InitialScale] distance: ${distance.toFixed(2)}, visibleHeight: ${visibleHeight.toFixed(2)}, ` +
+        `targetSize: ${targetSize.toFixed(2)}, objectSize: ${objectSize.toFixed(2)}, scale: ${scale.toFixed(2)}`
+    );
+
+    return scale;
   }
 
   /**
@@ -795,7 +838,7 @@ export class SPALAM implements IServiceProvider {
       stationaryAngularVelocityThreshold: 5.0,
     });
     this.distanceTracker.setInitialDepth(Math.abs(result.P0.z));
-    this.initialPlaneScale = 1.0;
+    // Note: initialPlaneScale is set in createPlaneFromResult before this method is called
 
     // 特徴点アンカーを初期化
     this.featureAnchor = new FeatureAnchor({
