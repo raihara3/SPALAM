@@ -11,7 +11,8 @@ import { RenderingMode, ShadowMapType } from "../types/RenderingTypes";
  */
 export const defaultConfig: SPALAMConfig = {
   features: {
-    maxCorners: 800,
+    // Reduced from 800 to 200 to limit memory usage on mobile devices
+    maxCorners: 200,
     qualityLevel: 0.001,
     minDistance: 5,
     blockSize: 3,
@@ -45,7 +46,8 @@ export const defaultConfig: SPALAMConfig = {
         type: 2, // TYPE_9_16
       },
       orb: {
-        nfeatures: 500,
+        // Reduced from 500 to 150 to limit memory usage on mobile devices
+        nfeatures: 150,
         scaleFactor: 1.2,
         nlevels: 8,
         edgeThreshold: 31,
@@ -105,7 +107,8 @@ export const defaultConfig: SPALAMConfig = {
     },
     cache: {
       enableFrameCache: true,
-      cacheSize: 5,
+      // Reduced from 5 to 3 to limit memory usage on mobile devices
+      cacheSize: 3,
       cacheTTL: 100,
     },
     performance: {

@@ -225,7 +225,8 @@ export class EnhancedFeatureDetector {
         type: "detect",
         payload: { imageData },
       };
-      this.worker.postMessage(message);
+      // Use Transferable to avoid memory copy (zero-copy transfer)
+      this.worker.postMessage(message, [imageData.data.buffer]);
 
       // 非同期なので、前回の結果を返す
       return this.prevFeatures;

@@ -37,6 +37,14 @@ export class EnhancedDepthEstimation {
   private frameRequestTime: number = 0;
   private adaptiveQualityLevel: number = 1.0;
 
+  // Reusable canvases to prevent memory leak
+  private renderTempCanvas: HTMLCanvasElement | null = null;
+  private renderTempContext: CanvasRenderingContext2D | null = null;
+  private qualityTempCanvas: HTMLCanvasElement | null = null;
+  private qualityTempContext: CanvasRenderingContext2D | null = null;
+  private qualitySourceCanvas: HTMLCanvasElement | null = null;
+  private qualitySourceContext: CanvasRenderingContext2D | null = null;
+
   constructor({
     canvas,
     context,
@@ -250,7 +258,8 @@ export class EnhancedDepthEstimation {
         id: requestId,
       };
 
-      worker.postMessage(message);
+      // Use Transferable to avoid memory copy (zero-copy transfer)
+      worker.postMessage(message, [imageData.data.buffer]);
 
       // タイムアウト設定
       setTimeout(() => {
@@ -285,13 +294,19 @@ export class EnhancedDepthEstimation {
       imageData[offset + 3] = 255;
     }
 
-    // 一時キャンバスに描画
+    // Reuse temporary canvas to prevent memory leak
     const outPixelData = new ImageData(imageData, width, height);
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    const tempCtx = tempCanvas.getContext("2d")!;
-    tempCtx.putImageData(outPixelData, 0, 0);
+    if (
+      !this.renderTempCanvas ||
+      this.renderTempCanvas.width !== width ||
+      this.renderTempCanvas.height !== height
+    ) {
+      this.renderTempCanvas = document.createElement("canvas");
+      this.renderTempCanvas.width = width;
+      this.renderTempCanvas.height = height;
+      this.renderTempContext = this.renderTempCanvas.getContext("2d");
+    }
+    this.renderTempContext!.putImageData(outPixelData, 0, 0);
 
     // メインキャンバスにスケーリングして描画
     this.depthContext.clearRect(
@@ -301,7 +316,7 @@ export class EnhancedDepthEstimation {
       this.depthCanvas.height
     );
     this.depthContext.drawImage(
-      tempCanvas,
+      this.renderTempCanvas,
       0,
       0,
       width,
@@ -411,21 +426,40 @@ export class EnhancedDepthEstimation {
     const newWidth = Math.floor(imageData.width * scale);
     const newHeight = Math.floor(imageData.height * scale);
 
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = newWidth;
-    tempCanvas.height = newHeight;
-    const tempCtx = tempCanvas.getContext("2d")!;
+    // Reuse temporary canvas to prevent memory leak
+    if (
+      !this.qualityTempCanvas ||
+      this.qualityTempCanvas.width !== newWidth ||
+      this.qualityTempCanvas.height !== newHeight
+    ) {
+      this.qualityTempCanvas = document.createElement("canvas");
+      this.qualityTempCanvas.width = newWidth;
+      this.qualityTempCanvas.height = newHeight;
+      this.qualityTempContext = this.qualityTempCanvas.getContext("2d");
+    }
 
-    // 元の画像を縮小して描画
-    const sourceCanvas = document.createElement("canvas");
-    sourceCanvas.width = imageData.width;
-    sourceCanvas.height = imageData.height;
-    const sourceCtx = sourceCanvas.getContext("2d")!;
-    sourceCtx.putImageData(imageData, 0, 0);
+    // Reuse source canvas
+    if (
+      !this.qualitySourceCanvas ||
+      this.qualitySourceCanvas.width !== imageData.width ||
+      this.qualitySourceCanvas.height !== imageData.height
+    ) {
+      this.qualitySourceCanvas = document.createElement("canvas");
+      this.qualitySourceCanvas.width = imageData.width;
+      this.qualitySourceCanvas.height = imageData.height;
+      this.qualitySourceContext = this.qualitySourceCanvas.getContext("2d");
+    }
+    this.qualitySourceContext!.putImageData(imageData, 0, 0);
 
-    tempCtx.drawImage(sourceCanvas, 0, 0, newWidth, newHeight);
+    this.qualityTempContext!.drawImage(
+      this.qualitySourceCanvas,
+      0,
+      0,
+      newWidth,
+      newHeight
+    );
 
-    return tempCtx.getImageData(0, 0, newWidth, newHeight);
+    return this.qualityTempContext!.getImageData(0, 0, newWidth, newHeight);
   }
 
   /**
@@ -485,5 +519,14 @@ export class EnhancedDepthEstimation {
     this.workers = [];
     this.workerPool = [];
     this.pendingRequests.clear();
+
+    // Clear reusable canvases
+    this.renderTempCanvas = null;
+    this.renderTempContext = null;
+    this.qualityTempCanvas = null;
+    this.qualityTempContext = null;
+    this.qualitySourceCanvas = null;
+    this.qualitySourceContext = null;
+    this.currentDepthMap = null;
   }
 }

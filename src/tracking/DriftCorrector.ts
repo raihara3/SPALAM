@@ -48,6 +48,11 @@ export class DriftCorrector {
 
   private referencePosition: THREE.Vector3 | null = null;
 
+  // Reusable objects to prevent GC pressure
+  private readonly reusableCentroid: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableTempVector: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusablePositionDrift: THREE.Vector3 = new THREE.Vector3();
+
   constructor(options?: DriftCorrectorOptions) {
     this.resetIntervalMs = options?.resetIntervalMs ?? 1000;
     this.minTrackedFrames = options?.minTrackedFrames ?? 10;
@@ -74,14 +79,15 @@ export class DriftCorrector {
       const existing = this.stableFeatures.get(feature.id);
 
       if (existing) {
-        // 既存の特徴点を更新
-        existing.position2D = { x: feature.x, y: feature.y };
+        // 既存の特徴点を更新 - avoid creating new objects
+        existing.position2D.x = feature.x;
+        existing.position2D.y = feature.y;
         existing.trackedFrames++;
         existing.lastUpdated = now;
 
-        // 3D位置があれば更新
+        // 3D位置があれば更新 - use copy() instead of clone()
         if (depth3DPoints?.has(feature.id)) {
-          existing.position3D = depth3DPoints.get(feature.id)!.clone();
+          existing.position3D.copy(depth3DPoints.get(feature.id)!);
         }
 
         // 信頼度を計算（追跡フレーム数に基づく）
@@ -171,6 +177,7 @@ export class DriftCorrector {
    * 視覚情報から基準姿勢を計算
    *
    * 安定特徴点の重心位置から、平面の向きを推定する
+   * Note: Uses reusable centroid vector - caller should not store the returned position
    */
   public computeVisualReference(): {
     position: THREE.Vector3;
@@ -182,25 +189,27 @@ export class DriftCorrector {
       return null;
     }
 
-    // 安定特徴点の3D位置の重心を計算
-    const centroid = new THREE.Vector3();
+    // 安定特徴点の3D位置の重心を計算 - reuse centroid vector
+    this.reusableCentroid.set(0, 0, 0);
     let totalConfidence = 0;
 
     for (const feature of stableFeatures) {
-      centroid.add(
-        feature.position3D.clone().multiplyScalar(feature.confidence)
-      );
+      // Avoid clone() - use temp vector for weighted position
+      this.reusableTempVector
+        .copy(feature.position3D)
+        .multiplyScalar(feature.confidence);
+      this.reusableCentroid.add(this.reusableTempVector);
       totalConfidence += feature.confidence;
     }
 
     if (totalConfidence > 0) {
-      centroid.divideScalar(totalConfidence);
+      this.reusableCentroid.divideScalar(totalConfidence);
     }
 
     const averageConfidence = totalConfidence / stableFeatures.length;
 
     return {
-      position: centroid,
+      position: this.reusableCentroid,
       confidence: averageConfidence,
     };
   }
@@ -211,6 +220,7 @@ export class DriftCorrector {
    * @param currentIMUOrientation 現在のIMU姿勢
    * @param visualReference 視覚から計算した基準位置
    * @returns 補正後の姿勢（補正不要ならnull）
+   * Note: Returns the same quaternion reference - caller should clone if needed
    */
   public correctDrift(
     currentIMUOrientation: THREE.Quaternion,
@@ -222,19 +232,19 @@ export class DriftCorrector {
 
     // 基準位置を更新
     if (!this.referencePosition) {
-      this.referencePosition = visualReference.position.clone();
+      this.referencePosition = new THREE.Vector3().copy(visualReference.position);
       this.lastResetTimestamp = Date.now();
       return null;
     }
 
-    // 位置のドリフト量を計算
-    const positionDrift = visualReference.position
-      .clone()
+    // 位置のドリフト量を計算 - reuse vector
+    this.reusablePositionDrift
+      .copy(visualReference.position)
       .sub(this.referencePosition);
 
     // ドリフトが大きい場合は基準をリセット
-    if (positionDrift.length() > 0.5) {
-      this.referencePosition = visualReference.position.clone();
+    if (this.reusablePositionDrift.length() > 0.5) {
+      this.referencePosition.copy(visualReference.position);
       this.lastResetTimestamp = Date.now();
 
       // 補正は行わず、新しい基準で次回から補正
@@ -245,7 +255,8 @@ export class DriftCorrector {
 
     // 現在の姿勢を返す（大きな補正は行わない）
     // 相補フィルタと組み合わせて使用することを想定
-    return currentIMUOrientation.clone();
+    // Note: Return same reference instead of clone - caller should clone if needed
+    return currentIMUOrientation;
   }
 
   /**

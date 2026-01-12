@@ -57,6 +57,23 @@ export class DeviceMotionTracker {
   private boundHandleOrientation: (event: DeviceOrientationEvent) => void;
   private boundHandleMotion: (event: DeviceMotionEvent) => void;
 
+  // IMU throttling - limit event processing to reduce CPU and memory usage
+  private imuThrottleInterval: number = 33; // ~30Hz (1000ms / 30)
+  private lastOrientationTime: number = 0;
+  private lastMotionTime: number = 0;
+
+  // Reusable objects to prevent GC pressure from high-frequency IMU events
+  private reusableAccelerationVector: THREE.Vector3 = new THREE.Vector3();
+  private reusableLinearAccelerationVector: THREE.Vector3 = new THREE.Vector3();
+  private reusableRotationRate: RotationRate = { alpha: 0, beta: 0, gamma: 0 };
+  private reusableMotionData: DeviceMotionData = {
+    accelerationIncludingGravity: new THREE.Vector3(),
+    acceleration: null,
+    rotationRate: { alpha: 0, beta: 0, gamma: 0 },
+    interval: 16,
+    timestamp: 0,
+  };
+
   constructor() {
     this.poseRepresentation = new PoseRepresentation();
     this.imuInitializer = new IMUInitializer();
@@ -196,11 +213,19 @@ export class DeviceMotionTracker {
 
   /**
    * DeviceOrientationイベントハンドラー
+   * Throttled to ~30Hz to reduce CPU and memory usage
    */
   private handleDeviceOrientation(event: DeviceOrientationEvent): void {
     if (event.alpha === null || event.beta === null || event.gamma === null) {
       return;
     }
+
+    // Throttle orientation events to reduce CPU usage
+    const now = performance.now();
+    if (now - this.lastOrientationTime < this.imuThrottleInterval) {
+      return;
+    }
+    this.lastOrientationTime = now;
 
     this.orientation = {
       alpha: event.alpha,
@@ -226,6 +251,8 @@ export class DeviceMotionTracker {
 
   /**
    * DeviceMotionイベントハンドラー
+   * Throttled to ~30Hz to reduce CPU and memory usage
+   * Note: Uses reusable objects to prevent GC pressure from 60-120Hz events
    */
   private handleDeviceMotion(event: DeviceMotionEvent): void {
     const acceleration = event.accelerationIncludingGravity;
@@ -234,41 +261,58 @@ export class DeviceMotionTracker {
 
     if (!acceleration) return;
 
-    const accelerationVector = new THREE.Vector3(
+    // Throttle motion events to reduce CPU usage
+    const now = performance.now();
+    if (now - this.lastMotionTime < this.imuThrottleInterval) {
+      return;
+    }
+    this.lastMotionTime = now;
+
+    // Reuse vector objects instead of creating new ones
+    this.reusableAccelerationVector.set(
       acceleration.x ?? 0,
       acceleration.y ?? 0,
       acceleration.z ?? 0
     );
 
-    const linearAccelerationVector = linearAcceleration
-      ? new THREE.Vector3(
-          linearAcceleration.x ?? 0,
-          linearAcceleration.y ?? 0,
-          linearAcceleration.z ?? 0
-        )
+    if (linearAcceleration) {
+      this.reusableLinearAccelerationVector.set(
+        linearAcceleration.x ?? 0,
+        linearAcceleration.y ?? 0,
+        linearAcceleration.z ?? 0
+      );
+    }
+
+    // Reuse rotation rate object
+    this.reusableRotationRate.alpha = rotationRate?.alpha ?? 0;
+    this.reusableRotationRate.beta = rotationRate?.beta ?? 0;
+    this.reusableRotationRate.gamma = rotationRate?.gamma ?? 0;
+
+    // Update motion data in place instead of creating new object
+    this.reusableMotionData.accelerationIncludingGravity.copy(
+      this.reusableAccelerationVector
+    );
+    this.reusableMotionData.acceleration = linearAcceleration
+      ? this.reusableLinearAccelerationVector
       : null;
+    this.reusableMotionData.rotationRate.alpha = this.reusableRotationRate.alpha;
+    this.reusableMotionData.rotationRate.beta = this.reusableRotationRate.beta;
+    this.reusableMotionData.rotationRate.gamma = this.reusableRotationRate.gamma;
+    this.reusableMotionData.interval = event.interval ?? 16;
+    this.reusableMotionData.timestamp = Date.now();
 
-    const rotationRateData: RotationRate = {
-      alpha: rotationRate?.alpha ?? 0,
-      beta: rotationRate?.beta ?? 0,
-      gamma: rotationRate?.gamma ?? 0,
-    };
-
-    this.motion = {
-      accelerationIncludingGravity: accelerationVector,
-      acceleration: linearAccelerationVector,
-      rotationRate: rotationRateData,
-      interval: event.interval ?? 16,
-      timestamp: Date.now(),
-    };
+    this.motion = this.reusableMotionData;
 
     if (this.state === DeviceMotionTrackerState.INITIALIZING) {
-      const angularVelocity = new THREE.Vector3(
-        rotationRateData.alpha,
-        rotationRateData.beta,
-        rotationRateData.gamma
+      // Reuse acceleration vector for initializer
+      this.imuInitializer.addSample(
+        this.reusableAccelerationVector,
+        this.reusableLinearAccelerationVector.set(
+          this.reusableRotationRate.alpha,
+          this.reusableRotationRate.beta,
+          this.reusableRotationRate.gamma
+        )
       );
-      this.imuInitializer.addSample(accelerationVector, angularVelocity);
     }
 
     this.emitMotionUpdate();
@@ -371,8 +415,13 @@ export class DeviceMotionTracker {
     this.driftMeasurements = [];
   }
 
+  // Reusable objects for drift measurement
+  private reusableDriftQuaternion: THREE.Quaternion = new THREE.Quaternion();
+  private reusableInverseQuaternion: THREE.Quaternion = new THREE.Quaternion();
+
   /**
    * 現在のドリフトを記録
+   * Note: Uses ring buffer pattern to avoid shift() which is O(n)
    */
   public recordDrift(): void {
     if (
@@ -382,23 +431,31 @@ export class DeviceMotionTracker {
       return;
     }
 
-    const elapsedTime = (Date.now() - this.referenceTimestamp) / 1000;
+    const now = Date.now();
+    const elapsedTime = (now - this.referenceTimestamp) / 1000;
 
-    const orientationDrift = this.currentQuaternion
-      .clone()
-      .multiply(this.referenceQuaternion.clone().invert());
+    // Reuse quaternions instead of clone()
+    this.reusableInverseQuaternion.copy(this.referenceQuaternion).invert();
+    this.reusableDriftQuaternion
+      .copy(this.currentQuaternion)
+      .multiply(this.reusableInverseQuaternion);
 
-    const measurement: DriftMeasurement = {
-      elapsedTime,
-      positionDrift: new THREE.Vector3(),
-      orientationDrift,
-      timestamp: Date.now(),
-    };
-
-    this.driftMeasurements.push(measurement);
-
-    if (this.driftMeasurements.length > this.maxDriftMeasurements) {
-      this.driftMeasurements.shift();
+    // Use ring buffer pattern instead of shift() which is O(n)
+    if (this.driftMeasurements.length >= this.maxDriftMeasurements) {
+      // Reuse oldest measurement object
+      const oldest = this.driftMeasurements.shift()!;
+      oldest.elapsedTime = elapsedTime;
+      oldest.orientationDrift.copy(this.reusableDriftQuaternion);
+      oldest.timestamp = now;
+      this.driftMeasurements.push(oldest);
+    } else {
+      // Create new measurement only when buffer isn't full
+      this.driftMeasurements.push({
+        elapsedTime,
+        positionDrift: new THREE.Vector3(),
+        orientationDrift: this.reusableDriftQuaternion.clone(),
+        timestamp: now,
+      });
     }
   }
 
@@ -465,30 +522,29 @@ export class DeviceMotionTracker {
 
   /**
    * 姿勢更新イベントを発行
+   * Note: Listeners should NOT modify the orientation object (it's reused)
    */
   private emitOrientationUpdate(): void {
     if (!this.orientation) return;
+    // Avoid spread - listeners must not modify this object
     this.emit({
       type: "orientationUpdate",
-      orientation: { ...this.orientation },
-      timestamp: Date.now(),
+      orientation: this.orientation,
+      timestamp: this.orientation.timestamp,
     });
   }
 
   /**
    * モーション更新イベントを発行
+   * Note: Listeners should NOT modify the motion object (it's reused)
    */
   private emitMotionUpdate(): void {
     if (!this.motion) return;
+    // Avoid clone() - listeners must not modify this object
     this.emit({
       type: "motionUpdate",
-      motion: {
-        ...this.motion,
-        accelerationIncludingGravity:
-          this.motion.accelerationIncludingGravity.clone(),
-        acceleration: this.motion.acceleration?.clone() ?? null,
-      },
-      timestamp: Date.now(),
+      motion: this.motion,
+      timestamp: this.motion.timestamp,
     });
   }
 
