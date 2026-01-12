@@ -129,6 +129,7 @@ const startSPALAM = async () => {
 
     await spalam.start();
     console.log("SPALAM started successfully");
+    spalam.setDrawFeaturesEnabled(true);
     hideLoading();
 
     // モバイルデバイスでIMUトラッキング許可ボタンを表示

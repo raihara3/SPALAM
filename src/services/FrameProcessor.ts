@@ -187,6 +187,44 @@ export class FrameProcessor {
   }
 
   /**
+   * 特徴点が失われているかどうかを返す
+   */
+  public hasLostFeatures(): boolean {
+    return this.featureDetector?.hasLostFeatures() ?? false;
+  }
+
+  /**
+   * 再検出を許可する（外部から呼び出し）
+   */
+  public allowRedetection(): void {
+    this.featureDetector?.allowRedetection();
+  }
+
+  /**
+   * 再配置時のターゲット座標を設定
+   * 設定された座標に最も近い特徴点がcenterFeatureとして選択される
+   * @param x スクリーンX座標（ピクセル）
+   * @param y スクリーンY座標（ピクセル）
+   */
+  public setTargetPosition(x: number, y: number): void {
+    this.featureDetector?.setTargetPosition(x, y);
+  }
+
+  /**
+   * 特徴点描画の有効/無効を設定
+   */
+  public setDrawFeaturesEnabled(enabled: boolean): void {
+    this.featureDetector?.setDrawFeaturesEnabled(enabled);
+  }
+
+  /**
+   * 特徴点描画が有効かどうかを取得
+   */
+  public isDrawFeaturesEnabled(): boolean {
+    return this.featureDetector?.isDrawFeaturesEnabled() ?? false;
+  }
+
+  /**
    * リセット
    */
   public reset(): void {
