@@ -4,8 +4,12 @@ import { Feature } from "./types";
 export class FeatureDetector {
   readonly cv: typeof cv;
   readonly video: HTMLVideoElement;
+  // Display canvas - full resolution for high quality display
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
+  // Processing canvas - scaled resolution for OpenCV (not displayed)
+  private readonly processCanvas: HTMLCanvasElement;
+  private readonly processCtx: CanvasRenderingContext2D;
 
   // Resolution scale factor for performance (0.5 = half resolution = 4x fewer pixels)
   private readonly resolutionScale: number = 0.5;
@@ -61,18 +65,25 @@ export class FeatureDetector {
     this.originalWidth = video.videoWidth;
     this.originalHeight = video.videoHeight;
 
+    // Display canvas - full resolution for high quality video display
     this.canvas = canvas || document.createElement("canvas");
     this.canvas.id = "featureCanvas";
-    // Use scaled resolution for better performance (0.5 = half resolution)
-    this.canvas.width = Math.floor(video.videoWidth * this.resolutionScale);
-    this.canvas.height = Math.floor(video.videoHeight * this.resolutionScale);
+    this.canvas.width = video.videoWidth;
+    this.canvas.height = video.videoHeight;
+    this.ctx = this.canvas.getContext("2d")!;
+
+    // Processing canvas - scaled resolution for OpenCV feature detection
+    this.processCanvas = document.createElement("canvas");
+    this.processCanvas.id = "featureProcessCanvas";
+    this.processCanvas.width = Math.floor(video.videoWidth * this.resolutionScale);
+    this.processCanvas.height = Math.floor(video.videoHeight * this.resolutionScale);
+    this.processCtx = this.processCanvas.getContext("2d")!;
 
     console.log(
-      `FeatureDetector: Using scaled resolution ${this.canvas.width}x${this.canvas.height} ` +
-        `(original: ${this.originalWidth}x${this.originalHeight}, scale: ${this.resolutionScale})`
+      `FeatureDetector: Display ${this.canvas.width}x${this.canvas.height}, ` +
+        `Processing ${this.processCanvas.width}x${this.processCanvas.height} ` +
+        `(scale: ${this.resolutionScale})`
     );
-
-    this.ctx = this.canvas.getContext("2d")!;
 
     if (showFeatures) {
       document.body.appendChild(this.canvas);
@@ -106,14 +117,18 @@ export class FeatureDetector {
   }
 
   public render() {
-    // Draw video scaled to canvas size
-    this.ctx.drawImage(
+    // Draw video at full resolution to display canvas
+    this.ctx.drawImage(this.video, 0, 0);
+
+    // Draw video at scaled resolution to processing canvas (for OpenCV)
+    this.processCtx.drawImage(
       this.video,
       0,
       0,
-      this.canvas.width,
-      this.canvas.height
+      this.processCanvas.width,
+      this.processCanvas.height
     );
+
     try {
       const features = this.detectAndTrackFeatures();
       this.drawFeatures(features);
@@ -185,9 +200,9 @@ export class FeatureDetector {
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
   private detectAndTrackFeatures(): Feature[] {
-    // 1) 入力サイズ取得
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    // 1) 入力サイズ取得 (processing canvas - scaled resolution)
+    const W = this.processCanvas.width;
+    const H = this.processCanvas.height;
 
     // Get pooled Mat objects
     const { mask, gray } = this.getPooledMats(W, H);
@@ -203,9 +218,8 @@ export class FeatureDetector {
       .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
       .setTo(new this.cv.Scalar(255));
 
-    // 3) グレースケール画像を作成 - use imread which creates new Mat each time
-    // but reuse gray Mat for cvtColor output
-    const src = this.cv.imread(this.canvas);
+    // 3) グレースケール画像を作成 - read from processing canvas (scaled)
+    const src = this.cv.imread(this.processCanvas);
     this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
 
     try {
@@ -458,6 +472,7 @@ export class FeatureDetector {
 
   /**
    * 特徴点の描画
+   * Features are in processCanvas coordinates (scaled), scaled up for display canvas
    */
   private drawFeatures(features: Feature[]): void {
     // centerFeatureの選択は常に実行（描画の有無に関わらず必要）
@@ -470,12 +485,19 @@ export class FeatureDetector {
       return;
     }
 
+    // Scale factor to convert from processCanvas to display canvas coordinates
+    const scaleUp = 1 / this.resolutionScale;
+
     features.forEach((feature) => {
       const isCenter =
         this.centerFeature && feature.id === this.centerFeature.id;
 
+      // Scale up coordinates for display canvas
+      const displayX = feature.x * scaleUp;
+      const displayY = feature.y * scaleUp;
+
       this.ctx.beginPath();
-      this.ctx.arc(feature.x, feature.y, isCenter ? 5 : 3, 0, 2 * Math.PI);
+      this.ctx.arc(displayX, displayY, isCenter ? 5 : 3, 0, 2 * Math.PI);
       this.ctx.fillStyle = isCenter ? "#FFFF00" : "#FF0000";
       this.ctx.fill();
     });
@@ -525,8 +547,11 @@ export class FeatureDetector {
 
     // 以下は初回検出時 または 再配置時（targetPosition が設定されている場合）のみ実行
     // ターゲット座標が設定されている場合はそれを使用、なければ画面中央
-    const targetX = this.targetPosition?.x ?? this.canvas.width / 2;
-    const targetY = this.targetPosition?.y ?? this.canvas.height / 2;
+    // Note: targetPosition is in display canvas coordinates, convert to processCanvas coordinates
+    const targetX =
+      (this.targetPosition?.x ?? this.canvas.width / 2) * this.resolutionScale;
+    const targetY =
+      (this.targetPosition?.y ?? this.canvas.height / 2) * this.resolutionScale;
     let nearestFeature: Feature | null = null;
     let minDistance = Infinity;
 
@@ -561,21 +586,24 @@ export class FeatureDetector {
 
   /**
    * 特徴点が有効かどうかを判定
+   * Note: Features are in processCanvas coordinates (scaled)
    */
   private isFeatureValid(feature: Feature): boolean {
+    const w = this.processCanvas.width;
+    const h = this.processCanvas.height;
     return (
       // 画面内に収まっているか
       feature.x >= 0 &&
-      feature.x <= this.canvas.width &&
+      feature.x <= w &&
       feature.y >= 0 &&
-      feature.y <= this.canvas.height &&
+      feature.y <= h &&
       // 一定フレーム以上追跡できているか
       feature.trackingCount >= 5 && // 安定性を高めるため5フレームに増やす
       // 画面端すぎない位置にあるか
-      feature.x > this.canvas.width * 0.1 &&
-      feature.x < this.canvas.width * 0.9 &&
-      feature.y > this.canvas.height * 0.1 &&
-      feature.y < this.canvas.height * 0.9
+      feature.x > w * 0.1 &&
+      feature.x < w * 0.9 &&
+      feature.y > h * 0.1 &&
+      feature.y < h * 0.9
     );
   }
 
