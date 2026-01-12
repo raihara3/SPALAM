@@ -681,6 +681,9 @@ export class SPALAM implements IServiceProvider {
           this.createPlaneFromResult(avgResult);
           this.stateManager.setPlaneDetected(true, avgResult);
 
+          // 平面検出完了後は深度推定を無効化（CPU/メモリ節約）
+          this.frameProcessor.setDepthEstimationEnabled(false);
+
           // 平面検出イベントを発火
           const planeData: PlaneData = {
             position: new THREE.Vector3().copy(avgResult.P0),
@@ -896,8 +899,9 @@ export class SPALAM implements IServiceProvider {
     features: InternalFeature[],
     minTrackingCount: number = 5
   ): { x: number; y: number } | null {
-    const width = this.frameProcessor.getCanvasWidth();
-    const height = this.frameProcessor.getCanvasHeight();
+    // Use original video dimensions since features are scaled to original coordinates
+    const width = this.frameProcessor.getOriginalWidth();
+    const height = this.frameProcessor.getOriginalHeight();
 
     // 安定した特徴点をフィルタリング
     const stableFeatures = features.filter(
@@ -1383,6 +1387,10 @@ export class SPALAM implements IServiceProvider {
     // Reuse Map instead of creating new one
     this.reusableDepth3DPoints.clear();
 
+    // Use original dimensions since features are scaled to original coordinates
+    const width = this.frameProcessor.getOriginalWidth() || 640;
+    const height = this.frameProcessor.getOriginalHeight() || 480;
+
     // フレームプロセッサから深度マップを取得して3D位置を計算
     const planeGroup = this.stateManager.getPlaneGroup();
     if (planeGroup) {
@@ -1392,8 +1400,8 @@ export class SPALAM implements IServiceProvider {
       for (let i = 0; i < features.length; i++) {
         const feature = features[i];
         // 簡易的な3D位置推定（平面上にあると仮定）
-        const normalizedX = (feature.x / 640 - 0.5) * 2;
-        const normalizedY = (feature.y / 480 - 0.5) * 2;
+        const normalizedX = (feature.x / width - 0.5) * 2;
+        const normalizedY = (feature.y / height - 0.5) * 2;
 
         // Use pooled Vector3 instead of creating new one
         const position3D = this.getPooledVector3(i);
@@ -1435,9 +1443,9 @@ export class SPALAM implements IServiceProvider {
 
     // 2. 特徴点アンカーを更新
     if (this.featureAnchor) {
-      // Cache values for closure to avoid repeated lookups
-      const width = this.frameProcessor.getCanvasWidth();
-      const height = this.frameProcessor.getCanvasHeight();
+      // Use original dimensions since features are scaled to original coordinates
+      const width = this.frameProcessor.getOriginalWidth();
+      const height = this.frameProcessor.getOriginalHeight();
 
       const get3DPosition = (feature: InternalFeature): THREE.Vector3 | null => {
         // 平面上の3D位置を推定 - reuse planeCenter

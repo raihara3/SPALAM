@@ -47,10 +47,12 @@ function getSpatiallySmoothedDepth(
 }
 
 /**
- * @param {Array<{ x: number, y: number }>} featurePoints  - 画像上の特徴点リスト（ピクセル座標）
+ * @param {Array<{ x: number, y: number }>} featurePoints  - 画像上の特徴点リスト（ピクセル座標、元の解像度）
  * @param {Float32Array<ArrayBufferLike>} depthMap         - depth-estimation の出力深度マップ（一次元配列、行優先）
  * @param {number} mapWidth                                - depthMap の横幅（ピクセル数）
  * @param {number} mapHeight                               - depthMap の縦幅（ピクセル数）
+ * @param {number} featureWidth                            - 特徴点座標系の幅（省略時はmapWidth）
+ * @param {number} featureHeight                           - 特徴点座標系の高さ（省略時はmapHeight）
  * @returns {Array<{ x: number, y: number, z: number, id: string }>}   - 各特徴点に対応する 3D 点群
  */
 function sampleDepthAtFeaturePoints({
@@ -58,12 +60,19 @@ function sampleDepthAtFeaturePoints({
   depthMap,
   mapWidth,
   mapHeight,
+  featureWidth,
+  featureHeight,
 }: {
   featurePoints: Feature[];
   depthMap: Float32Array<ArrayBufferLike> | null;
   mapWidth: number;
   mapHeight: number;
+  featureWidth?: number;
+  featureHeight?: number;
 }): Array<{ x: number; y: number; z: number; id: string }> {
+  // Use provided feature dimensions or fall back to map dimensions
+  const srcWidth = featureWidth || mapWidth;
+  const srcHeight = featureHeight || mapHeight;
   const points3D = [];
 
   // 深度マップが利用できない場合のフォールバック
@@ -71,8 +80,8 @@ function sampleDepthAtFeaturePoints({
     console.warn("Depth map not available, using fallback depth estimation");
     for (const point of featurePoints) {
       // 画面中央からの距離に基づく簡易深度推定
-      const centerX = window.innerWidth / 2;
-      const centerY = window.innerHeight / 2;
+      const centerX = srcWidth / 2;
+      const centerY = srcHeight / 2;
       const distanceFromCenter = Math.sqrt(
         Math.pow(point.x - centerX, 2) + Math.pow(point.y - centerY, 2)
       );
@@ -95,8 +104,10 @@ function sampleDepthAtFeaturePoints({
 
   for (const point of featurePoints) {
     // 特徴点の座標を深度マップのサイズに合わせてスケーリング
-    const scaledX = Math.floor((point.x * mapWidth) / window.innerWidth);
-    const scaledY = Math.floor((point.y * mapHeight) / window.innerHeight);
+    // srcWidth/Height: 特徴点座標系のサイズ（元の解像度）
+    // mapWidth/Height: 深度マップのサイズ（スケール後の解像度）
+    const scaledX = Math.floor((point.x * mapWidth) / srcWidth);
+    const scaledY = Math.floor((point.y * mapHeight) / srcHeight);
 
     // 深度マップの範囲内かチェック
     if (

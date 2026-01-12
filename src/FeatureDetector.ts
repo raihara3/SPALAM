@@ -7,6 +7,12 @@ export class FeatureDetector {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
 
+  // Resolution scale factor for performance (0.5 = half resolution = 4x fewer pixels)
+  private readonly resolutionScale: number = 0.5;
+  // Store original video dimensions for coordinate conversion
+  private readonly originalWidth: number;
+  private readonly originalHeight: number;
+
   private readonly maxCorners: number = 800; // 最大特徴点数
   private readonly qualityLevel: number = 0.001; // 特徴点の質。小さいほど高品質
   private readonly minDistance: number = 5; // 特徴点間の最小距離。密集するのを防ぐ
@@ -27,6 +33,13 @@ export class FeatureDetector {
   private drawFeaturesEnabled: boolean = false; // 特徴点描画の有効/無効フラグ
   private trackingStarted: boolean = false; // 追跡が開始されたかどうか
 
+  // Reusable OpenCV Mat objects to prevent memory allocation every frame
+  private pooledMask: cv.Mat | null = null;
+  private pooledGray: cv.Mat | null = null;
+  private pooledSrc: cv.Mat | null = null;
+  private lastPooledWidth: number = 0;
+  private lastPooledHeight: number = 0;
+
   constructor({
     cv: cvInstance,
     video,
@@ -44,10 +57,20 @@ export class FeatureDetector {
     this.video = video;
     this.disableRedetection = disableRedetection;
 
+    // Store original dimensions for coordinate conversion
+    this.originalWidth = video.videoWidth;
+    this.originalHeight = video.videoHeight;
+
     this.canvas = canvas || document.createElement("canvas");
     this.canvas.id = "featureCanvas";
-    this.canvas.width = video.videoWidth;
-    this.canvas.height = video.videoHeight;
+    // Use scaled resolution for better performance (0.5 = half resolution)
+    this.canvas.width = Math.floor(video.videoWidth * this.resolutionScale);
+    this.canvas.height = Math.floor(video.videoHeight * this.resolutionScale);
+
+    console.log(
+      `FeatureDetector: Using scaled resolution ${this.canvas.width}x${this.canvas.height} ` +
+        `(original: ${this.originalWidth}x${this.originalHeight}, scale: ${this.resolutionScale})`
+    );
 
     this.ctx = this.canvas.getContext("2d")!;
 
@@ -83,7 +106,14 @@ export class FeatureDetector {
   }
 
   public render() {
-    this.ctx.drawImage(this.video, 0, 0);
+    // Draw video scaled to canvas size
+    this.ctx.drawImage(
+      this.video,
+      0,
+      0,
+      this.canvas.width,
+      this.canvas.height
+    );
     try {
       const features = this.detectAndTrackFeatures();
       this.drawFeatures(features);
@@ -93,8 +123,62 @@ export class FeatureDetector {
     }
   }
 
+  /**
+   * Get original video width (before scaling)
+   */
+  public getOriginalWidth(): number {
+    return this.originalWidth;
+  }
+
+  /**
+   * Get original video height (before scaling)
+   */
+  public getOriginalHeight(): number {
+    return this.originalHeight;
+  }
+
+  /**
+   * Get resolution scale factor
+   */
+  public getResolutionScale(): number {
+    return this.resolutionScale;
+  }
+
   private generateFeatureId(): string {
     return `feature_${this.nextFeatureId++}`;
+  }
+
+  /**
+   * Get or create pooled Mat objects to avoid allocation every frame
+   */
+  private getPooledMats(
+    width: number,
+    height: number
+  ): { mask: cv.Mat; gray: cv.Mat; src: cv.Mat } {
+    // Check if we need to recreate (size changed)
+    const needsRecreate =
+      width !== this.lastPooledWidth || height !== this.lastPooledHeight;
+
+    if (needsRecreate) {
+      // Delete old mats if they exist
+      if (this.pooledMask) this.pooledMask.delete();
+      if (this.pooledGray) this.pooledGray.delete();
+      if (this.pooledSrc) this.pooledSrc.delete();
+
+      // Create new mats
+      this.pooledMask = this.cv.Mat.zeros(height, width, this.cv.CV_8UC1);
+      this.pooledGray = new this.cv.Mat();
+      this.pooledSrc = new this.cv.Mat();
+
+      this.lastPooledWidth = width;
+      this.lastPooledHeight = height;
+    }
+
+    return {
+      mask: this.pooledMask!,
+      gray: this.pooledGray!,
+      src: this.pooledSrc!,
+    };
   }
 
   /**
@@ -105,8 +189,12 @@ export class FeatureDetector {
     const W = this.canvas.width;
     const H = this.canvas.height;
 
+    // Get pooled Mat objects
+    const { mask, gray } = this.getPooledMats(W, H);
+
     // 2) マスクを作成（中央60%×60%だけ検出許可）
-    const mask = this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
+    // Reset mask to zeros first
+    mask.setTo(new this.cv.Scalar(0));
     const roiX = Math.floor(W * 0.2);
     const roiY = Math.floor(H * 0.2);
     const roiW = Math.floor(W * 0.6);
@@ -115,9 +203,9 @@ export class FeatureDetector {
       .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
       .setTo(new this.cv.Scalar(255));
 
-    // 3) グレースケール画像を作成
+    // 3) グレースケール画像を作成 - use imread which creates new Mat each time
+    // but reuse gray Mat for cvtColor output
     const src = this.cv.imread(this.canvas);
-    const gray = new this.cv.Mat();
     this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
 
     try {
@@ -299,10 +387,8 @@ export class FeatureDetector {
 
       return trackedFeatures;
     } finally {
-      // 必ず解放
+      // Only delete src - gray and mask are pooled and reused
       src.delete();
-      gray.delete();
-      mask.delete();
     }
   }
 
@@ -315,6 +401,27 @@ export class FeatureDetector {
     this.redetectionAllowed = false;
     this.trackingStarted = false;
     this.centerFeature = null;
+  }
+
+  /**
+   * Cleanup pooled Mat objects - call when detector is no longer needed
+   */
+  public dispose(): void {
+    this.reset();
+    if (this.pooledMask) {
+      this.pooledMask.delete();
+      this.pooledMask = null;
+    }
+    if (this.pooledGray) {
+      this.pooledGray.delete();
+      this.pooledGray = null;
+    }
+    if (this.pooledSrc) {
+      this.pooledSrc.delete();
+      this.pooledSrc = null;
+    }
+    this.lastPooledWidth = 0;
+    this.lastPooledHeight = 0;
   }
 
   /**
@@ -473,6 +580,27 @@ export class FeatureDetector {
   }
 
   public getTrackedFeaturePoints(): Feature[] {
-    return this.trackedFeatures.filter((feature) => feature.trackingCount >= 5);
+    const inverseScale = 1 / this.resolutionScale;
+    return this.trackedFeatures
+      .filter((feature) => feature.trackingCount >= 5)
+      .map((feature) => ({
+        ...feature,
+        // Scale coordinates back to original video dimensions
+        x: feature.x * inverseScale,
+        y: feature.y * inverseScale,
+      }));
+  }
+
+  /**
+   * Get center feature with coordinates scaled to original video dimensions
+   */
+  public getCenterFeatureScaled(): Feature | null {
+    if (!this.centerFeature) return null;
+    const inverseScale = 1 / this.resolutionScale;
+    return {
+      ...this.centerFeature,
+      x: this.centerFeature.x * inverseScale,
+      y: this.centerFeature.y * inverseScale,
+    };
   }
 }

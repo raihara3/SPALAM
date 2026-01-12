@@ -20,6 +20,7 @@ export class FrameProcessor {
   private featureDetector: FeatureDetector | null = null;
   private depthEstimation: DepthEstimation | null = null;
   private isInitialized: boolean = false;
+  private depthEstimationEnabled: boolean = true;
 
   constructor() {}
 
@@ -112,9 +113,9 @@ export class FrameProcessor {
     const features = this.featureDetector.getTrackedFeaturePoints();
     const centerFeature = this.featureDetector.centerFeature;
 
-    // 深度マップを取得（深度推定が利用可能な場合のみ）
+    // 深度マップを取得（深度推定が有効かつ利用可能な場合のみ）
     let depthMap = null;
-    if (this.depthEstimation) {
+    if (this.depthEstimation && this.depthEstimationEnabled) {
       try {
         depthMap = await this.depthEstimation.getDepthMap();
       } catch (error) {
@@ -141,24 +142,38 @@ export class FrameProcessor {
   }
 
   /**
-   * キャンバスの幅を取得
+   * キャンバスの幅を取得（スケール後）
    */
   public getCanvasWidth(): number {
     return this.featureDetector?.canvas.width || 0;
   }
 
   /**
-   * キャンバスの高さを取得
+   * キャンバスの高さを取得（スケール後）
    */
   public getCanvasHeight(): number {
     return this.featureDetector?.canvas.height || 0;
   }
 
   /**
-   * 追跡中の特徴点を取得
+   * オリジナルビデオの幅を取得（スケール前）
+   */
+  public getOriginalWidth(): number {
+    return this.featureDetector?.getOriginalWidth() || 0;
+  }
+
+  /**
+   * オリジナルビデオの高さを取得（スケール前）
+   */
+  public getOriginalHeight(): number {
+    return this.featureDetector?.getOriginalHeight() || 0;
+  }
+
+  /**
+   * 追跡中の特徴点を取得（座標はオリジナルビデオサイズにスケール済み）
    */
   public getTrackedFeatures(): Feature[] {
-    return this.featureDetector?.trackedFeatures || [];
+    return this.featureDetector?.getTrackedFeaturePoints() || [];
   }
 
   /**
@@ -169,10 +184,10 @@ export class FrameProcessor {
   }
 
   /**
-   * 中心特徴点を取得
+   * 中心特徴点を取得（座標はオリジナルビデオサイズにスケール済み）
    */
   public getCenterFeature(): Feature | null {
-    return this.featureDetector?.centerFeature || null;
+    return this.featureDetector?.getCenterFeatureScaled() || null;
   }
 
   /**
@@ -222,6 +237,24 @@ export class FrameProcessor {
    */
   public isDrawFeaturesEnabled(): boolean {
     return this.featureDetector?.isDrawFeaturesEnabled() ?? false;
+  }
+
+  /**
+   * 深度推定の有効/無効を設定
+   * 平面検出完了後は無効にすることでCPU/メモリ使用量を削減できる
+   */
+  public setDepthEstimationEnabled(enabled: boolean): void {
+    this.depthEstimationEnabled = enabled;
+    if (!enabled) {
+      console.log("Depth estimation disabled to save resources");
+    }
+  }
+
+  /**
+   * 深度推定が有効かどうかを取得
+   */
+  public isDepthEstimationEnabled(): boolean {
+    return this.depthEstimationEnabled;
   }
 
   /**
