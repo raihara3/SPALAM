@@ -13,6 +13,16 @@ interface FeaturePair {
 }
 
 /**
+ * Velocity state for outlier detection
+ */
+interface FeatureVelocityState {
+  lastX: number;
+  lastY: number;
+  excludedFromScale: boolean;
+  stableFrameCount: number;
+}
+
+/**
  * Distance Tracker Options
  */
 export interface DistanceTrackerOptions {
@@ -32,6 +42,10 @@ export interface DistanceTrackerOptions {
   maxScaleChangePerFrame?: number;
   /** Outlier threshold in IQR multiples. Default: 1.5 */
   outlierThreshold?: number;
+  /** MAD multiplier for velocity outlier detection. Default: 3.0 */
+  velocityOutlierMadMultiplier?: number;
+  /** Frames required for outlier feature to recover. Default: 5 */
+  velocityOutlierRecoveryFrames?: number;
 }
 
 /**
@@ -64,6 +78,10 @@ export class DistanceTracker {
   private maxScaleChangePerFrame: number;
   private outlierThreshold: number;
 
+  private velocityOutlierMadMultiplier: number;
+  private velocityOutlierRecoveryFrames: number;
+  private featureVelocityStates: Map<string, FeatureVelocityState> = new Map();
+
   constructor(options?: DistanceTrackerOptions) {
     this.minTrackedFrames = options?.minTrackedFrames ?? 10;
     this.maxPairs = options?.maxPairs ?? 20;
@@ -75,6 +93,10 @@ export class DistanceTracker {
       options?.stationaryAngularVelocityThreshold ?? 5.0;
     this.maxScaleChangePerFrame = options?.maxScaleChangePerFrame ?? 0.05;
     this.outlierThreshold = options?.outlierThreshold ?? 1.5;
+    this.velocityOutlierMadMultiplier =
+      options?.velocityOutlierMadMultiplier ?? 3.0;
+    this.velocityOutlierRecoveryFrames =
+      options?.velocityOutlierRecoveryFrames ?? 5;
   }
 
   /**
@@ -101,6 +123,9 @@ export class DistanceTracker {
     for (const feature of features) {
       featureMap.set(feature.id, feature);
     }
+
+    // Update velocity states and detect outliers
+    this.updateVelocityOutliers(features);
 
     // Update existing pairs
     const validPairs: FeaturePair[] = [];
@@ -198,6 +223,122 @@ export class DistanceTracker {
   }
 
   /**
+   * Update velocity states and detect outliers based on relative movement
+   * Uses MAD (Median Absolute Deviation) for robust outlier detection
+   */
+  private updateVelocityOutliers(features: Feature[]): void {
+    // Calculate velocities for features that have previous positions
+    const velocities: { id: string; velocity: number }[] = [];
+
+    for (const feature of features) {
+      const prevState = this.featureVelocityStates.get(feature.id);
+      if (prevState) {
+        const dx = feature.x - prevState.lastX;
+        const dy = feature.y - prevState.lastY;
+        const velocity = Math.sqrt(dx * dx + dy * dy);
+        velocities.push({ id: feature.id, velocity });
+      }
+    }
+
+    // Need at least 3 features to compute meaningful statistics
+    if (velocities.length < 3) {
+      // Just update positions without outlier detection
+      this.updateFeaturePositions(features);
+      return;
+    }
+
+    // Calculate median velocity
+    const sortedVelocities = [...velocities].sort(
+      (a, b) => a.velocity - b.velocity
+    );
+    const medianIndex = Math.floor(sortedVelocities.length / 2);
+    const medianVelocity =
+      sortedVelocities.length % 2 === 0
+        ? (sortedVelocities[medianIndex - 1].velocity +
+            sortedVelocities[medianIndex].velocity) /
+          2
+        : sortedVelocities[medianIndex].velocity;
+
+    // Calculate MAD (Median Absolute Deviation)
+    const absoluteDeviations = velocities.map((v) =>
+      Math.abs(v.velocity - medianVelocity)
+    );
+    absoluteDeviations.sort((a, b) => a - b);
+    const madIndex = Math.floor(absoluteDeviations.length / 2);
+    const mad =
+      absoluteDeviations.length % 2 === 0
+        ? (absoluteDeviations[madIndex - 1] + absoluteDeviations[madIndex]) / 2
+        : absoluteDeviations[madIndex];
+
+    // Calculate outlier threshold (median + multiplier * MAD)
+    // Use a minimum MAD to avoid too strict threshold when all features move similarly
+    const effectiveMad = Math.max(mad, 2.0);
+    const outlierThreshold =
+      medianVelocity + this.velocityOutlierMadMultiplier * effectiveMad;
+
+    // Update states based on outlier detection
+    const currentFeatureIds = new Set(features.map((f) => f.id));
+
+    for (const { id, velocity } of velocities) {
+      const state = this.featureVelocityStates.get(id);
+      if (!state) continue;
+
+      const isOutlier = velocity > outlierThreshold;
+
+      if (isOutlier) {
+        // Mark as excluded and reset stable count
+        state.excludedFromScale = true;
+        state.stableFrameCount = 0;
+      } else if (state.excludedFromScale) {
+        // Feature was excluded but is now stable, increment counter
+        state.stableFrameCount++;
+        if (state.stableFrameCount >= this.velocityOutlierRecoveryFrames) {
+          // Recovered: allow back into scale calculation
+          state.excludedFromScale = false;
+        }
+      }
+    }
+
+    // Update positions for all features
+    this.updateFeaturePositions(features);
+
+    // Remove states for features no longer present
+    for (const id of this.featureVelocityStates.keys()) {
+      if (!currentFeatureIds.has(id)) {
+        this.featureVelocityStates.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Update feature positions in velocity states
+   */
+  private updateFeaturePositions(features: Feature[]): void {
+    for (const feature of features) {
+      const existing = this.featureVelocityStates.get(feature.id);
+      if (existing) {
+        existing.lastX = feature.x;
+        existing.lastY = feature.y;
+      } else {
+        this.featureVelocityStates.set(feature.id, {
+          lastX: feature.x,
+          lastY: feature.y,
+          excludedFromScale: false,
+          stableFrameCount: 0,
+        });
+      }
+    }
+  }
+
+  /**
+   * Check if a feature is currently excluded from scale calculation
+   */
+  private isFeatureExcludedFromScale(featureId: string): boolean {
+    const state = this.featureVelocityStates.get(featureId);
+    return state?.excludedFromScale ?? false;
+  }
+
+  /**
    * Create a unique pair ID
    */
   private createPairId(id1: string, id2: string): string {
@@ -272,7 +413,10 @@ export class DistanceTracker {
    */
   private calculateScaleWithOutlierRejection(): number | null {
     const stablePairs = Array.from(this.featurePairs.values()).filter(
-      (pair) => pair.trackedFrames >= this.minTrackedFrames
+      (pair) =>
+        pair.trackedFrames >= this.minTrackedFrames &&
+        !this.isFeatureExcludedFromScale(pair.id1) &&
+        !this.isFeatureExcludedFromScale(pair.id2)
     );
 
     if (stablePairs.length === 0) {
@@ -377,6 +521,19 @@ export class DistanceTracker {
   }
 
   /**
+   * Get the number of features currently excluded from scale calculation
+   */
+  public getExcludedFeatureCount(): number {
+    let count = 0;
+    for (const state of this.featureVelocityStates.values()) {
+      if (state.excludedFromScale) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
    * Get statistics
    */
   public getStatistics(): {
@@ -385,6 +542,7 @@ export class DistanceTracker {
     depthRatio: number;
     trackedPairs: number;
     stablePairs: number;
+    excludedFeatures: number;
   } {
     return {
       scale: this.currentScale,
@@ -392,6 +550,7 @@ export class DistanceTracker {
       depthRatio: this.getDepthRatio(),
       trackedPairs: this.getTrackedPairCount(),
       stablePairs: this.getStablePairCount(),
+      excludedFeatures: this.getExcludedFeatureCount(),
     };
   }
 
@@ -400,6 +559,7 @@ export class DistanceTracker {
    */
   public reset(): void {
     this.featurePairs.clear();
+    this.featureVelocityStates.clear();
     this.currentScale = 1.0;
     this.currentDepth = this.initialDepth;
   }
@@ -409,5 +569,6 @@ export class DistanceTracker {
    */
   public dispose(): void {
     this.featurePairs.clear();
+    this.featureVelocityStates.clear();
   }
 }
