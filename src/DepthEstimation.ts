@@ -27,6 +27,10 @@ export class DepthEstimation {
   isProcessing: boolean = false;
   depthMap: Float32Array | null = null;
 
+  // Reusable temporary canvas for depth map rendering (prevents memory leak)
+  private temporaryCanvas: HTMLCanvasElement | null = null;
+  private temporaryContext: CanvasRenderingContext2D | null = null;
+
   constructor({
     canvas,
     context,
@@ -307,17 +311,25 @@ export class DepthEstimation {
       imageData[offset + 3] = 255; // Alpha（完全不透明）
     }
     const outPixelData = new ImageData(imageData, ow, oh);
-    const tmp = document.createElement("canvas");
-    tmp.width = ow;
-    tmp.height = oh;
-    const tmpCtx = tmp.getContext("2d")!;
-    tmpCtx.putImageData(outPixelData, 0, 0);
+
+    // Reuse temporary canvas to prevent memory leak
+    if (
+      !this.temporaryCanvas ||
+      this.temporaryCanvas.width !== ow ||
+      this.temporaryCanvas.height !== oh
+    ) {
+      this.temporaryCanvas = document.createElement("canvas");
+      this.temporaryCanvas.width = ow;
+      this.temporaryCanvas.height = oh;
+      this.temporaryContext = this.temporaryCanvas.getContext("2d");
+    }
+    this.temporaryContext!.putImageData(outPixelData, 0, 0);
     // if (this.depthContext) {
     //   this.depthContext.putImageData(outPixelData, 0, 0);
     // }
     this.depthContext!.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.depthContext!.drawImage(
-      tmp,
+      this.temporaryCanvas!,
       0,
       0,
       ow,

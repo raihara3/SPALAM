@@ -373,6 +373,24 @@ export class FeatureAnchor {
   }
 
   /**
+   * Clear invalid anchors (high error or low stability)
+   * Used for periodic memory cleanup
+   */
+  public clearInvalidAnchors(): void {
+    const now = Date.now();
+    for (const [id, anchor] of this.anchors) {
+      // Remove if invalid, low stability, or expired
+      if (
+        !anchor.isValid ||
+        anchor.stability < 0.3 ||
+        now - anchor.lastUpdated > this.anchorExpiryMs * 0.5
+      ) {
+        this.anchors.delete(id);
+      }
+    }
+  }
+
+  /**
    * Reset all anchors
    */
   public reset(): void {

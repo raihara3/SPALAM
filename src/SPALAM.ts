@@ -346,6 +346,14 @@ export class SPALAM implements IServiceProvider {
   /** アニメーションフレームID */
   private animationFrameId: number | null = null;
 
+  /** Frame rate limiting - 30fps to reduce CPU and memory pressure */
+  private frameInterval: number = 1000 / 30; // ~33ms per frame
+  private lastFrameTime: number = 0;
+
+  /** Periodic memory reset */
+  private memoryResetInterval: number = 60000; // 1 minute
+  private lastMemoryResetTime: number = 0;
+
   /** デバイスモーショントラッカー */
   private deviceMotionTracker: DeviceMotionTracker | null = null;
   /** IMUトラッキングが有効かどうか */
@@ -368,6 +376,21 @@ export class SPALAM implements IServiceProvider {
   private initialPlaneScale: number = 1.0;
   /** 再配置待ちフラグ（オブジェクトをcenterFeatureの位置に移動する必要がある） */
   private pendingReposition: boolean = false;
+
+  // Reusable objects to prevent GC pressure from per-frame allocations
+  private readonly reusablePlaneCenter: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusablePosition3D: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusablePlaneNormal: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableDefaultNormal: THREE.Vector3 = new THREE.Vector3(
+    0,
+    0,
+    1
+  );
+  private readonly reusableTargetQuaternion: THREE.Quaternion =
+    new THREE.Quaternion();
+  private readonly reusableDepth3DPoints: Map<string, THREE.Vector3> =
+    new Map();
+  private readonly reusableVector3Pool: THREE.Vector3[] = [];
 
   constructor(
     config?: SPALAMConfig | Partial<SPALAMConfig>,
@@ -658,6 +681,9 @@ export class SPALAM implements IServiceProvider {
           this.createPlaneFromResult(avgResult);
           this.stateManager.setPlaneDetected(true, avgResult);
 
+          // 平面検出完了後は深度推定を無効化（CPU/メモリ節約）
+          this.frameProcessor.setDepthEstimationEnabled(false);
+
           // 平面検出イベントを発火
           const planeData: PlaneData = {
             position: new THREE.Vector3().copy(avgResult.P0),
@@ -873,8 +899,9 @@ export class SPALAM implements IServiceProvider {
     features: InternalFeature[],
     minTrackingCount: number = 5
   ): { x: number; y: number } | null {
-    const width = this.frameProcessor.getCanvasWidth();
-    const height = this.frameProcessor.getCanvasHeight();
+    // Use original video dimensions since features are scaled to original coordinates
+    const width = this.frameProcessor.getOriginalWidth();
+    const height = this.frameProcessor.getOriginalHeight();
 
     // 安定した特徴点をフィルタリング
     const stableFeatures = features.filter(
@@ -1054,8 +1081,27 @@ export class SPALAM implements IServiceProvider {
   /**
    * レンダリングループ
    * ARレンダリングを実行
+   * Frame rate is limited to targetFPS (default: 30fps) to reduce memory pressure
    */
   public render(): void {
+    const currentTime = performance.now();
+    const elapsed = currentTime - this.lastFrameTime;
+
+    // Schedule next frame first
+    this.animationFrameId = requestAnimationFrame(() => this.render());
+
+    // Skip frame if not enough time has passed (frame rate limiting)
+    if (elapsed < this.frameInterval) {
+      return;
+    }
+    this.lastFrameTime = currentTime - (elapsed % this.frameInterval);
+
+    // Periodic memory reset check
+    if (currentTime - this.lastMemoryResetTime > this.memoryResetInterval) {
+      this.performMemoryReset();
+      this.lastMemoryResetTime = currentTime;
+    }
+
     // IMUトラッキングが有効な場合、カメラの姿勢を更新
     if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
       this.updateCameraFromIMU();
@@ -1125,7 +1171,54 @@ export class SPALAM implements IServiceProvider {
     if (this.arRenderer) {
       this.arRenderer.render();
     }
-    this.animationFrameId = requestAnimationFrame(() => this.render());
+  }
+
+  /**
+   * Perform periodic memory reset to prevent memory buildup
+   * Clears caches and resets internal state while preserving tracking
+   */
+  private performMemoryReset(): void {
+    console.log("Performing periodic memory reset...");
+
+    // Clear reusable depth3D points Map
+    this.reusableDepth3DPoints.clear();
+
+    // Reset drift corrector while keeping stable features
+    if (this.driftCorrector) {
+      this.driftCorrector.forceReset();
+    }
+
+    // Reset complementary filter state
+    if (this.complementaryFilter) {
+      this.complementaryFilter.reset();
+    }
+
+    // Reset distance tracker scale measurements
+    if (this.distanceTracker) {
+      this.distanceTracker.reset();
+      // Restore initial depth if plane is detected
+      const planeResult = this.stateManager.getPlaneResult();
+      if (planeResult) {
+        this.distanceTracker.setInitialDepth(Math.abs(planeResult.P0.z));
+      }
+    }
+
+    // Clear feature anchor old entries
+    if (this.featureAnchor) {
+      this.featureAnchor.clearInvalidAnchors();
+    }
+
+    // Clear gravity aligner smoothing state
+    if (this.gravityAligner) {
+      this.gravityAligner.reset();
+    }
+
+    // Request garbage collection hint (if available)
+    if (typeof (globalThis as { gc?: () => void }).gc === "function") {
+      (globalThis as { gc: () => void }).gc();
+    }
+
+    console.log("Memory reset complete");
   }
 
   // Frustum判定用のキャッシュ（毎フレーム new を避ける）
@@ -1275,37 +1368,54 @@ export class SPALAM implements IServiceProvider {
   }
 
   /**
+   * Get or create a reusable Vector3 from pool
+   */
+  private getPooledVector3(index: number): THREE.Vector3 {
+    if (!this.reusableVector3Pool[index]) {
+      this.reusableVector3Pool[index] = new THREE.Vector3();
+    }
+    return this.reusableVector3Pool[index];
+  }
+
+  /**
    * ドリフト補正器に特徴点情報を更新
+   * Note: Uses reusable objects to prevent GC pressure
    */
   private updateDriftCorrector(features: InternalFeature[]): void {
     if (!this.driftCorrector) return;
 
-    // 特徴点の3D位置を取得（深度情報がある場合）
-    const depth3DPoints = new Map<string, THREE.Vector3>();
+    // Reuse Map instead of creating new one
+    this.reusableDepth3DPoints.clear();
+
+    // Use original dimensions since features are scaled to original coordinates
+    const width = this.frameProcessor.getOriginalWidth() || 640;
+    const height = this.frameProcessor.getOriginalHeight() || 480;
 
     // フレームプロセッサから深度マップを取得して3D位置を計算
     const planeGroup = this.stateManager.getPlaneGroup();
     if (planeGroup) {
       // 平面の中心位置を基準として特徴点の3D位置を推定
-      const planeCenter = new THREE.Vector3();
-      planeGroup.getWorldPosition(planeCenter);
+      planeGroup.getWorldPosition(this.reusablePlaneCenter);
 
-      for (const feature of features) {
+      for (let i = 0; i < features.length; i++) {
+        const feature = features[i];
         // 簡易的な3D位置推定（平面上にあると仮定）
-        const normalizedX = (feature.x / 640 - 0.5) * 2;
-        const normalizedY = (feature.y / 480 - 0.5) * 2;
+        const normalizedX = (feature.x / width - 0.5) * 2;
+        const normalizedY = (feature.y / height - 0.5) * 2;
 
-        const position3D = new THREE.Vector3(
-          planeCenter.x + normalizedX * 0.5,
-          planeCenter.y - normalizedY * 0.5,
-          planeCenter.z
+        // Use pooled Vector3 instead of creating new one
+        const position3D = this.getPooledVector3(i);
+        position3D.set(
+          this.reusablePlaneCenter.x + normalizedX * 0.5,
+          this.reusablePlaneCenter.y - normalizedY * 0.5,
+          this.reusablePlaneCenter.z
         );
 
-        depth3DPoints.set(feature.id, position3D);
+        this.reusableDepth3DPoints.set(feature.id, position3D);
       }
     }
 
-    this.driftCorrector.updateFeatures(features, depth3DPoints);
+    this.driftCorrector.updateFeatures(features, this.reusableDepth3DPoints);
   }
 
   /**
@@ -1333,22 +1443,24 @@ export class SPALAM implements IServiceProvider {
 
     // 2. 特徴点アンカーを更新
     if (this.featureAnchor) {
-      const get3DPosition = (feature: InternalFeature): THREE.Vector3 | null => {
-        // 平面上の3D位置を推定
-        const planeCenter = new THREE.Vector3();
-        planeGroup.getWorldPosition(planeCenter);
+      // Use original dimensions since features are scaled to original coordinates
+      const width = this.frameProcessor.getOriginalWidth();
+      const height = this.frameProcessor.getOriginalHeight();
 
-        const width = this.frameProcessor.getCanvasWidth();
-        const height = this.frameProcessor.getCanvasHeight();
+      const get3DPosition = (feature: InternalFeature): THREE.Vector3 | null => {
+        // 平面上の3D位置を推定 - reuse planeCenter
+        planeGroup.getWorldPosition(this.reusablePlaneCenter);
 
         const normalizedX = (feature.x / width - 0.5) * 2;
         const normalizedY = -(feature.y / height - 0.5) * 2;
 
-        return new THREE.Vector3(
-          planeCenter.x + normalizedX * 0.5,
-          planeCenter.y + normalizedY * 0.5,
-          planeCenter.z
+        // Reuse position3D vector
+        this.reusablePosition3D.set(
+          this.reusablePlaneCenter.x + normalizedX * 0.5,
+          this.reusablePlaneCenter.y + normalizedY * 0.5,
+          this.reusablePlaneCenter.z
         );
+        return this.reusablePosition3D;
       };
 
       this.featureAnchor.updateAnchors(features, get3DPosition);
@@ -1361,23 +1473,24 @@ export class SPALAM implements IServiceProvider {
         // IMUからの重力ベクトルを更新
         this.gravityAligner.updateGravity(gravity);
 
-        // 平面の法線を重力に合わせて補正
-        const planeNormal = new THREE.Vector3().copy(planeResult.normal);
-        const alignment = this.gravityAligner.alignPlaneNormal(planeNormal);
+        // 平面の法線を重力に合わせて補正 - reuse planeNormal
+        this.reusablePlaneNormal.copy(planeResult.normal);
+        const alignment = this.gravityAligner.alignPlaneNormal(
+          this.reusablePlaneNormal
+        );
 
         // 補正済みの法線から目標のquaternionを計算
         const correctedNormal = alignment.correctedNormal;
 
         // PlaneGeometryはデフォルトでZ+方向を向いているので、
-        // その法線を補正済み法線に向けるquaternionを計算
-        const defaultNormal = new THREE.Vector3(0, 0, 1);
-        const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
-          defaultNormal,
+        // その法線を補正済み法線に向けるquaternionを計算 - reuse objects
+        this.reusableTargetQuaternion.setFromUnitVectors(
+          this.reusableDefaultNormal,
           correctedNormal
         );
 
         // 現在のquaternionから目標に向かってslerp
-        planeGroup.quaternion.slerp(targetQuaternion, 0.1);
+        planeGroup.quaternion.slerp(this.reusableTargetQuaternion, 0.1);
       }
     }
   }

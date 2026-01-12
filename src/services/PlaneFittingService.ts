@@ -112,6 +112,9 @@ export class PlaneFittingService {
       depthMap,
       mapWidth: safeMapWidth,
       mapHeight: safeMapHeight,
+      // Features are in original video coordinates, depth map is in scaled canvas coordinates
+      featureWidth: safeVideoWidth,
+      featureHeight: safeVideoHeight,
     });
 
     const intrinsics = this.getIntrinsics(safeVideoWidth, safeVideoHeight);

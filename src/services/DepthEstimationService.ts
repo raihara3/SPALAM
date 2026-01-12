@@ -451,12 +451,32 @@ export class DepthEstimationService {
     const hash = this.computeImageHash(imageData);
     this.frameCache.set(hash, result);
 
-    // キャッシュサイズ制限
+    // Remove expired entries and enforce size limit
+    this.pruneCache();
+  }
+
+  /**
+   * Remove expired cache entries and enforce size limit
+   */
+  private pruneCache(): void {
     const maxSize = this.config.cache?.cacheSize || 10;
-    if (this.frameCache.size > maxSize) {
+    const ttl = this.config.cache?.cacheTTL || 1000;
+    const now = Date.now();
+
+    // Remove expired entries
+    for (const [key, value] of this.frameCache) {
+      if (now - value.timestamp > ttl) {
+        this.frameCache.delete(key);
+      }
+    }
+
+    // Enforce size limit (remove oldest entries)
+    while (this.frameCache.size > maxSize) {
       const firstKey = this.frameCache.keys().next().value;
       if (firstKey) {
         this.frameCache.delete(firstKey);
+      } else {
+        break;
       }
     }
   }

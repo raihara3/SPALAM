@@ -4,8 +4,18 @@ import { Feature } from "./types";
 export class FeatureDetector {
   readonly cv: typeof cv;
   readonly video: HTMLVideoElement;
+  // Display canvas - full resolution for high quality display
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
+  // Processing canvas - scaled resolution for OpenCV (not displayed)
+  private readonly processCanvas: HTMLCanvasElement;
+  private readonly processCtx: CanvasRenderingContext2D;
+
+  // Resolution scale factor for performance (0.5 = half resolution = 4x fewer pixels)
+  private readonly resolutionScale: number = 0.5;
+  // Store original video dimensions for coordinate conversion
+  private readonly originalWidth: number;
+  private readonly originalHeight: number;
 
   private readonly maxCorners: number = 800; // 最大特徴点数
   private readonly qualityLevel: number = 0.001; // 特徴点の質。小さいほど高品質
@@ -27,6 +37,13 @@ export class FeatureDetector {
   private drawFeaturesEnabled: boolean = false; // 特徴点描画の有効/無効フラグ
   private trackingStarted: boolean = false; // 追跡が開始されたかどうか
 
+  // Reusable OpenCV Mat objects to prevent memory allocation every frame
+  private pooledMask: cv.Mat | null = null;
+  private pooledGray: cv.Mat | null = null;
+  private pooledSrc: cv.Mat | null = null;
+  private lastPooledWidth: number = 0;
+  private lastPooledHeight: number = 0;
+
   constructor({
     cv: cvInstance,
     video,
@@ -44,12 +61,29 @@ export class FeatureDetector {
     this.video = video;
     this.disableRedetection = disableRedetection;
 
+    // Store original dimensions for coordinate conversion
+    this.originalWidth = video.videoWidth;
+    this.originalHeight = video.videoHeight;
+
+    // Display canvas - full resolution for high quality video display
     this.canvas = canvas || document.createElement("canvas");
     this.canvas.id = "featureCanvas";
     this.canvas.width = video.videoWidth;
     this.canvas.height = video.videoHeight;
-
     this.ctx = this.canvas.getContext("2d")!;
+
+    // Processing canvas - scaled resolution for OpenCV feature detection
+    this.processCanvas = document.createElement("canvas");
+    this.processCanvas.id = "featureProcessCanvas";
+    this.processCanvas.width = Math.floor(video.videoWidth * this.resolutionScale);
+    this.processCanvas.height = Math.floor(video.videoHeight * this.resolutionScale);
+    this.processCtx = this.processCanvas.getContext("2d")!;
+
+    console.log(
+      `FeatureDetector: Display ${this.canvas.width}x${this.canvas.height}, ` +
+        `Processing ${this.processCanvas.width}x${this.processCanvas.height} ` +
+        `(scale: ${this.resolutionScale})`
+    );
 
     if (showFeatures) {
       document.body.appendChild(this.canvas);
@@ -83,7 +117,18 @@ export class FeatureDetector {
   }
 
   public render() {
+    // Draw video at full resolution to display canvas
     this.ctx.drawImage(this.video, 0, 0);
+
+    // Draw video at scaled resolution to processing canvas (for OpenCV)
+    this.processCtx.drawImage(
+      this.video,
+      0,
+      0,
+      this.processCanvas.width,
+      this.processCanvas.height
+    );
+
     try {
       const features = this.detectAndTrackFeatures();
       this.drawFeatures(features);
@@ -93,20 +138,78 @@ export class FeatureDetector {
     }
   }
 
+  /**
+   * Get original video width (before scaling)
+   */
+  public getOriginalWidth(): number {
+    return this.originalWidth;
+  }
+
+  /**
+   * Get original video height (before scaling)
+   */
+  public getOriginalHeight(): number {
+    return this.originalHeight;
+  }
+
+  /**
+   * Get resolution scale factor
+   */
+  public getResolutionScale(): number {
+    return this.resolutionScale;
+  }
+
   private generateFeatureId(): string {
     return `feature_${this.nextFeatureId++}`;
+  }
+
+  /**
+   * Get or create pooled Mat objects to avoid allocation every frame
+   */
+  private getPooledMats(
+    width: number,
+    height: number
+  ): { mask: cv.Mat; gray: cv.Mat; src: cv.Mat } {
+    // Check if we need to recreate (size changed)
+    const needsRecreate =
+      width !== this.lastPooledWidth || height !== this.lastPooledHeight;
+
+    if (needsRecreate) {
+      // Delete old mats if they exist
+      if (this.pooledMask) this.pooledMask.delete();
+      if (this.pooledGray) this.pooledGray.delete();
+      if (this.pooledSrc) this.pooledSrc.delete();
+
+      // Create new mats
+      this.pooledMask = this.cv.Mat.zeros(height, width, this.cv.CV_8UC1);
+      this.pooledGray = new this.cv.Mat();
+      this.pooledSrc = new this.cv.Mat();
+
+      this.lastPooledWidth = width;
+      this.lastPooledHeight = height;
+    }
+
+    return {
+      mask: this.pooledMask!,
+      gray: this.pooledGray!,
+      src: this.pooledSrc!,
+    };
   }
 
   /**
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
   private detectAndTrackFeatures(): Feature[] {
-    // 1) 入力サイズ取得
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    // 1) 入力サイズ取得 (processing canvas - scaled resolution)
+    const W = this.processCanvas.width;
+    const H = this.processCanvas.height;
+
+    // Get pooled Mat objects
+    const { mask, gray } = this.getPooledMats(W, H);
 
     // 2) マスクを作成（中央60%×60%だけ検出許可）
-    const mask = this.cv.Mat.zeros(H, W, this.cv.CV_8UC1);
+    // Reset mask to zeros first
+    mask.setTo(new this.cv.Scalar(0));
     const roiX = Math.floor(W * 0.2);
     const roiY = Math.floor(H * 0.2);
     const roiW = Math.floor(W * 0.6);
@@ -115,9 +218,8 @@ export class FeatureDetector {
       .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
       .setTo(new this.cv.Scalar(255));
 
-    // 3) グレースケール画像を作成
-    const src = this.cv.imread(this.canvas);
-    const gray = new this.cv.Mat();
+    // 3) グレースケール画像を作成 - read from processing canvas (scaled)
+    const src = this.cv.imread(this.processCanvas);
     this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
 
     try {
@@ -299,10 +401,8 @@ export class FeatureDetector {
 
       return trackedFeatures;
     } finally {
-      // 必ず解放
+      // Only delete src - gray and mask are pooled and reused
       src.delete();
-      gray.delete();
-      mask.delete();
     }
   }
 
@@ -315,6 +415,27 @@ export class FeatureDetector {
     this.redetectionAllowed = false;
     this.trackingStarted = false;
     this.centerFeature = null;
+  }
+
+  /**
+   * Cleanup pooled Mat objects - call when detector is no longer needed
+   */
+  public dispose(): void {
+    this.reset();
+    if (this.pooledMask) {
+      this.pooledMask.delete();
+      this.pooledMask = null;
+    }
+    if (this.pooledGray) {
+      this.pooledGray.delete();
+      this.pooledGray = null;
+    }
+    if (this.pooledSrc) {
+      this.pooledSrc.delete();
+      this.pooledSrc = null;
+    }
+    this.lastPooledWidth = 0;
+    this.lastPooledHeight = 0;
   }
 
   /**
@@ -351,6 +472,7 @@ export class FeatureDetector {
 
   /**
    * 特徴点の描画
+   * Features are in processCanvas coordinates (scaled), scaled up for display canvas
    */
   private drawFeatures(features: Feature[]): void {
     // centerFeatureの選択は常に実行（描画の有無に関わらず必要）
@@ -363,12 +485,19 @@ export class FeatureDetector {
       return;
     }
 
+    // Scale factor to convert from processCanvas to display canvas coordinates
+    const scaleUp = 1 / this.resolutionScale;
+
     features.forEach((feature) => {
       const isCenter =
         this.centerFeature && feature.id === this.centerFeature.id;
 
+      // Scale up coordinates for display canvas
+      const displayX = feature.x * scaleUp;
+      const displayY = feature.y * scaleUp;
+
       this.ctx.beginPath();
-      this.ctx.arc(feature.x, feature.y, isCenter ? 5 : 3, 0, 2 * Math.PI);
+      this.ctx.arc(displayX, displayY, isCenter ? 5 : 3, 0, 2 * Math.PI);
       this.ctx.fillStyle = isCenter ? "#FFFF00" : "#FF0000";
       this.ctx.fill();
     });
@@ -418,8 +547,11 @@ export class FeatureDetector {
 
     // 以下は初回検出時 または 再配置時（targetPosition が設定されている場合）のみ実行
     // ターゲット座標が設定されている場合はそれを使用、なければ画面中央
-    const targetX = this.targetPosition?.x ?? this.canvas.width / 2;
-    const targetY = this.targetPosition?.y ?? this.canvas.height / 2;
+    // Note: targetPosition is in display canvas coordinates, convert to processCanvas coordinates
+    const targetX =
+      (this.targetPosition?.x ?? this.canvas.width / 2) * this.resolutionScale;
+    const targetY =
+      (this.targetPosition?.y ?? this.canvas.height / 2) * this.resolutionScale;
     let nearestFeature: Feature | null = null;
     let minDistance = Infinity;
 
@@ -454,25 +586,49 @@ export class FeatureDetector {
 
   /**
    * 特徴点が有効かどうかを判定
+   * Note: Features are in processCanvas coordinates (scaled)
    */
   private isFeatureValid(feature: Feature): boolean {
+    const w = this.processCanvas.width;
+    const h = this.processCanvas.height;
     return (
       // 画面内に収まっているか
       feature.x >= 0 &&
-      feature.x <= this.canvas.width &&
+      feature.x <= w &&
       feature.y >= 0 &&
-      feature.y <= this.canvas.height &&
+      feature.y <= h &&
       // 一定フレーム以上追跡できているか
       feature.trackingCount >= 5 && // 安定性を高めるため5フレームに増やす
       // 画面端すぎない位置にあるか
-      feature.x > this.canvas.width * 0.1 &&
-      feature.x < this.canvas.width * 0.9 &&
-      feature.y > this.canvas.height * 0.1 &&
-      feature.y < this.canvas.height * 0.9
+      feature.x > w * 0.1 &&
+      feature.x < w * 0.9 &&
+      feature.y > h * 0.1 &&
+      feature.y < h * 0.9
     );
   }
 
   public getTrackedFeaturePoints(): Feature[] {
-    return this.trackedFeatures.filter((feature) => feature.trackingCount >= 5);
+    const inverseScale = 1 / this.resolutionScale;
+    return this.trackedFeatures
+      .filter((feature) => feature.trackingCount >= 5)
+      .map((feature) => ({
+        ...feature,
+        // Scale coordinates back to original video dimensions
+        x: feature.x * inverseScale,
+        y: feature.y * inverseScale,
+      }));
+  }
+
+  /**
+   * Get center feature with coordinates scaled to original video dimensions
+   */
+  public getCenterFeatureScaled(): Feature | null {
+    if (!this.centerFeature) return null;
+    const inverseScale = 1 / this.resolutionScale;
+    return {
+      ...this.centerFeature,
+      x: this.centerFeature.x * inverseScale,
+      y: this.centerFeature.y * inverseScale,
+    };
   }
 }

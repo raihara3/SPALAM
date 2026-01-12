@@ -31,6 +31,12 @@ export class ComplementaryFilter {
   private previousOutput: THREE.Quaternion | null = null;
   private lastVisualTimestamp: number = 0;
 
+  // Reusable objects to prevent GC pressure
+  private readonly reusableFusedQuaternion: THREE.Quaternion =
+    new THREE.Quaternion();
+  private readonly reusableSmoothedQuaternion: THREE.Quaternion =
+    new THREE.Quaternion();
+
   constructor(options?: ComplementaryFilterOptions) {
     this.alpha = options?.alpha ?? 0.98;
     this.baseAlpha = this.alpha;
@@ -45,6 +51,7 @@ export class ComplementaryFilter {
    * @param visualOrientation 視覚からの姿勢（null可）
    * @param visualConfidence 視覚の信頼度（0-1）
    * @returns 融合された姿勢
+   * Note: Returns reusable quaternion - caller should copy if needed
    */
   public fuse(
     imuOrientation: THREE.Quaternion,
@@ -62,15 +69,14 @@ export class ComplementaryFilter {
     // 信頼度に基づいてalphaを動的調整
     this.updateAlpha(visualConfidence);
 
-    // クォータニオンのSLERP（球面線形補間）で融合
-    const fusedOrientation = new THREE.Quaternion();
-    fusedOrientation.slerpQuaternions(
+    // クォータニオンのSLERP（球面線形補間）で融合 - reuse quaternion
+    this.reusableFusedQuaternion.slerpQuaternions(
       visualOrientation,
       imuOrientation,
       this.alpha
     );
 
-    return this.applySmoothing(fusedOrientation);
+    return this.applySmoothing(this.reusableFusedQuaternion);
   }
 
   /**
@@ -93,23 +99,23 @@ export class ComplementaryFilter {
   /**
    * スムージングを適用
    * 急激な姿勢変化を滑らかにする
+   * Note: Returns reusable quaternion - caller should copy if needed
    */
   private applySmoothing(orientation: THREE.Quaternion): THREE.Quaternion {
     if (!this.previousOutput) {
-      this.previousOutput = orientation.clone();
+      this.previousOutput = new THREE.Quaternion().copy(orientation);
       return orientation;
     }
 
-    // SLERPでスムージング
-    const smoothed = new THREE.Quaternion();
-    smoothed.slerpQuaternions(
+    // SLERPでスムージング - reuse quaternion
+    this.reusableSmoothedQuaternion.slerpQuaternions(
       this.previousOutput,
       orientation,
       1 - this.smoothingFactor
     );
 
-    this.previousOutput = smoothed.clone();
-    return smoothed;
+    this.previousOutput.copy(this.reusableSmoothedQuaternion);
+    return this.reusableSmoothedQuaternion;
   }
 
   /**
@@ -118,7 +124,10 @@ export class ComplementaryFilter {
    * @param visualOrientation 基準となる視覚姿勢
    */
   public resetToVisual(visualOrientation: THREE.Quaternion): void {
-    this.previousOutput = visualOrientation.clone();
+    if (!this.previousOutput) {
+      this.previousOutput = new THREE.Quaternion();
+    }
+    this.previousOutput.copy(visualOrientation);
     this.lastVisualTimestamp = Date.now();
   }
 

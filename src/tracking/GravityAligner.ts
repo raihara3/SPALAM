@@ -68,6 +68,14 @@ export class GravityAligner {
   private lastPlaneNormal: THREE.Vector3 | null = null;
   private planeType: PlaneType = PlaneType.UNKNOWN;
 
+  // Reusable objects to prevent GC pressure
+  private readonly reusableNormalized: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableNormal: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableCorrectedNormal: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableTargetNormal: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableGravityComponent: THREE.Vector3 = new THREE.Vector3();
+  private readonly reusableQuaternion: THREE.Quaternion = new THREE.Quaternion();
+
   constructor(options?: GravityAlignerOptions) {
     this.horizontalThreshold = options?.horizontalThreshold ?? 15;
     this.verticalThreshold = options?.verticalThreshold ?? 15;
@@ -88,12 +96,12 @@ export class GravityAligner {
    * @param gravityVector Gravity vector from IMU (typically pointing down)
    */
   public updateGravity(gravityVector: THREE.Vector3): void {
-    // Normalize and smooth
-    const normalized = gravityVector.clone().normalize();
+    // Normalize and smooth - reuse vector instead of clone
+    this.reusableNormalized.copy(gravityVector).normalize();
     const smoothed = this.gravitySmoother.update(
-      normalized.x,
-      normalized.y,
-      normalized.z
+      this.reusableNormalized.x,
+      this.reusableNormalized.y,
+      this.reusableNormalized.z
     );
     this.smoothedGravity.set(smoothed.x, smoothed.y, smoothed.z).normalize();
   }
@@ -103,20 +111,23 @@ export class GravityAligner {
    *
    * @param planeNormal Original plane normal from RANSAC
    * @returns Alignment result with corrected normal
+   * Note: correctedNormal in result uses reusable vector - caller should copy if storing
    */
   public alignPlaneNormal(planeNormal: THREE.Vector3): AlignmentResult {
-    const normal = planeNormal.clone().normalize();
+    // Reuse normal vector instead of clone
+    this.reusableNormal.copy(planeNormal).normalize();
 
     // Calculate angle between plane normal and gravity
     // For horizontal planes: normal should be parallel to gravity (0 or 180 degrees)
     // For vertical planes: normal should be perpendicular to gravity (90 degrees)
-    const dotProduct = normal.dot(this.smoothedGravity);
+    const dotProduct = this.reusableNormal.dot(this.smoothedGravity);
     const angleToGravity = Math.acos(Math.abs(dotProduct)) * (180 / Math.PI);
 
     // Determine plane type
     this.planeType = this.determinePlaneType(angleToGravity);
 
-    let correctedNormal = normal.clone();
+    // Reuse corrected normal vector
+    this.reusableCorrectedNormal.copy(this.reusableNormal);
     let correctionApplied = 0;
     let confidence = 1.0;
 
@@ -126,10 +137,13 @@ export class GravityAligner {
     ) {
       // Force horizontal alignment: normal should be parallel to gravity
       const sign = dotProduct >= 0 ? 1 : -1;
-      const targetNormal = this.smoothedGravity.clone().multiplyScalar(sign);
+      // Reuse target normal vector
+      this.reusableTargetNormal.copy(this.smoothedGravity).multiplyScalar(sign);
 
       // Calculate correction
-      const correctionAngle = normal.angleTo(targetNormal) * (180 / Math.PI);
+      const correctionAngle =
+        this.reusableNormal.angleTo(this.reusableTargetNormal) *
+        (180 / Math.PI);
 
       // Limit correction per frame
       const actualCorrection = Math.min(
@@ -140,20 +154,26 @@ export class GravityAligner {
       if (actualCorrection > 0.1) {
         // Interpolate towards target
         const t = actualCorrection / correctionAngle;
-        correctedNormal.lerp(targetNormal, t).normalize();
+        this.reusableCorrectedNormal
+          .lerp(this.reusableTargetNormal, t)
+          .normalize();
         correctionApplied = actualCorrection;
       } else {
-        correctedNormal = targetNormal;
+        this.reusableCorrectedNormal.copy(this.reusableTargetNormal);
         correctionApplied = correctionAngle;
       }
 
       confidence = 1.0 - angleToGravity / this.horizontalThreshold;
     } else if (this.planeType === PlaneType.VERTICAL) {
       // For vertical planes, ensure normal is perpendicular to gravity
-      const gravityComponent = this.smoothedGravity
-        .clone()
+      // Reuse gravity component vector
+      this.reusableGravityComponent
+        .copy(this.smoothedGravity)
         .multiplyScalar(dotProduct);
-      correctedNormal = normal.clone().sub(gravityComponent).normalize();
+      this.reusableCorrectedNormal
+        .copy(this.reusableNormal)
+        .sub(this.reusableGravityComponent)
+        .normalize();
 
       const correctionAngle =
         Math.abs(90 - angleToGravity) > this.maxCorrectionAnglePerFrame
@@ -165,16 +185,22 @@ export class GravityAligner {
 
     // Smooth the corrected normal
     const smoothed = this.normalSmoother.update(
-      correctedNormal.x,
-      correctedNormal.y,
-      correctedNormal.z
+      this.reusableCorrectedNormal.x,
+      this.reusableCorrectedNormal.y,
+      this.reusableCorrectedNormal.z
     );
-    correctedNormal.set(smoothed.x, smoothed.y, smoothed.z).normalize();
+    this.reusableCorrectedNormal
+      .set(smoothed.x, smoothed.y, smoothed.z)
+      .normalize();
 
-    this.lastPlaneNormal = correctedNormal.clone();
+    // Update lastPlaneNormal - allocate once if null, then copy
+    if (!this.lastPlaneNormal) {
+      this.lastPlaneNormal = new THREE.Vector3();
+    }
+    this.lastPlaneNormal.copy(this.reusableCorrectedNormal);
 
     return {
-      correctedNormal,
+      correctedNormal: this.reusableCorrectedNormal,
       planeType: this.planeType,
       angleToGravity,
       correctionApplied,
@@ -236,19 +262,20 @@ export class GravityAligner {
    *
    * @param currentNormal Current plane normal
    * @returns Quaternion to rotate the plane to align with gravity
+   * Note: Returns reusable quaternion - caller should copy if storing
    */
   public getAlignmentQuaternion(
     currentNormal: THREE.Vector3
   ): THREE.Quaternion {
     const result = this.alignPlaneNormal(currentNormal);
 
-    const quaternion = new THREE.Quaternion();
-    quaternion.setFromUnitVectors(
-      currentNormal.normalize(),
+    // Reuse quaternion
+    this.reusableQuaternion.setFromUnitVectors(
+      this.reusableNormal, // Already normalized in alignPlaneNormal
       result.correctedNormal
     );
 
-    return quaternion;
+    return this.reusableQuaternion;
   }
 
   /**
