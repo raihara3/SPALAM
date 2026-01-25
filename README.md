@@ -4,8 +4,9 @@
 
 TypeScript-based WebAR library for real-time plane detection and tracking using computer vision.
 
-
 https://github.com/user-attachments/assets/9762daf9-ff60-41e2-b04f-45614b298b3f
+
+DEMO: https://raihara3.github.io/SPALAM/
 
 ## Features
 
