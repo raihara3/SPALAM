@@ -32,7 +32,7 @@ export interface VisualInertialOptimizerOptions {
   huberThreshold?: number;
   /** Gravity magnitude (m/s²). Default: 9.80665 */
   gravityMagnitude?: number;
-  /** Minimum scale value. Default: 0.01 */
+  /** Minimum scale value. Default: 0.0001 */
   minScale?: number;
   /** Maximum scale value. Default: 100 */
   maxScale?: number;
@@ -93,7 +93,7 @@ export class VisualInertialOptimizer {
     this.biasPriorWeight = options?.biasPriorWeight ?? 0.01;
     this.huberThreshold = options?.huberThreshold ?? 5.99;
     this.gravityMagnitude = options?.gravityMagnitude ?? 9.80665;
-    this.minScale = options?.minScale ?? 0.01;
+    this.minScale = options?.minScale ?? 0.0001;
     this.maxScale = options?.maxScale ?? 100;
   }
 

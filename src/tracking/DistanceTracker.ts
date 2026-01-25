@@ -43,7 +43,7 @@ export interface DistanceTrackerOptions {
   stationaryAccelerationThreshold?: number;
   /** Angular velocity threshold for stationary detection (deg/s). Default: 5.0 */
   stationaryAngularVelocityThreshold?: number;
-  /** Maximum scale change per frame (ratio). Default: 0.05 (5%) */
+  /** Maximum scale change per frame (ratio). Default: 0.2 (20%) */
   maxScaleChangePerFrame?: number;
   /** Outlier threshold in IQR multiples. Default: 1.5 */
   outlierThreshold?: number;
@@ -96,7 +96,7 @@ export class DistanceTracker {
       options?.stationaryAccelerationThreshold ?? 0.3;
     this.stationaryAngularVelocityThreshold =
       options?.stationaryAngularVelocityThreshold ?? 5.0;
-    this.maxScaleChangePerFrame = options?.maxScaleChangePerFrame ?? 0.05;
+    this.maxScaleChangePerFrame = options?.maxScaleChangePerFrame ?? 0.2;
     this.outlierThreshold = options?.outlierThreshold ?? 1.5;
     this.velocityOutlierMadMultiplier =
       options?.velocityOutlierMadMultiplier ?? 3.0;

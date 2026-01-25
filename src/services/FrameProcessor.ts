@@ -245,6 +245,13 @@ export class FrameProcessor {
   }
 
   /**
+   * 特徴点描画のスケールを設定
+   */
+  public setFeatureScale(scale: number): void {
+    this.featureDetector?.setScale(scale);
+  }
+
+  /**
    * 深度推定の有効/無効を設定
    * 平面検出完了後は無効にすることでCPU/メモリ使用量を削減できる
    */

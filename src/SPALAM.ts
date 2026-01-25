@@ -1444,6 +1444,9 @@ export class SPALAM implements IServiceProvider {
       const scale = this.distanceTracker.update(features);
       const targetScale = scale * this.initialPlaneScale;
       planeGroup.scale.set(targetScale, targetScale, targetScale);
+
+      // 特徴点の描画サイズもスケールに連動
+      this.frameProcessor.setFeatureScale(scale);
     }
 
     // 2. 特徴点アンカーを更新

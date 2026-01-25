@@ -41,6 +41,7 @@ export class FeatureDetector {
   private targetPosition: { x: number; y: number } | null = null; // 再配置時のターゲット座標
   private drawFeaturesEnabled: boolean = false; // 特徴点描画の有効/無効フラグ
   private trackingStarted: boolean = false; // 追跡が開始されたかどうか
+  private currentScale: number = 1.0; // 現在のスケール値（描画サイズに反映）
 
   // Reusable OpenCV Mat objects to prevent memory allocation every frame
   private pooledMask: cv.Mat | null = null;
@@ -80,8 +81,12 @@ export class FeatureDetector {
     // Processing canvas - scaled resolution for OpenCV feature detection
     this.processCanvas = document.createElement("canvas");
     this.processCanvas.id = "featureProcessCanvas";
-    this.processCanvas.width = Math.floor(video.videoWidth * this.resolutionScale);
-    this.processCanvas.height = Math.floor(video.videoHeight * this.resolutionScale);
+    this.processCanvas.width = Math.floor(
+      video.videoWidth * this.resolutionScale
+    );
+    this.processCanvas.height = Math.floor(
+      video.videoHeight * this.resolutionScale
+    );
     this.processCtx = this.processCanvas.getContext("2d")!;
 
     console.log(
@@ -501,8 +506,12 @@ export class FeatureDetector {
       const displayX = feature.x * scaleUp;
       const displayY = feature.y * scaleUp;
 
+      // Scale-aware feature point size (base: 5px for center, 3px for others)
+      const baseRadius = isCenter ? 5 : 3;
+      const scaledRadius = Math.max(1, baseRadius * this.currentScale);
+
       this.ctx.beginPath();
-      this.ctx.arc(displayX, displayY, isCenter ? 5 : 3, 0, 2 * Math.PI);
+      this.ctx.arc(displayX, displayY, scaledRadius, 0, 2 * Math.PI);
       this.ctx.fillStyle = isCenter ? "#FFFF00" : "#FF0000";
       this.ctx.fill();
     });
@@ -520,6 +529,20 @@ export class FeatureDetector {
    */
   public isDrawFeaturesEnabled(): boolean {
     return this.drawFeaturesEnabled;
+  }
+
+  /**
+   * 現在のスケール値を設定（描画サイズに反映）
+   */
+  public setScale(scale: number): void {
+    this.currentScale = scale;
+  }
+
+  /**
+   * 現在のスケール値を取得
+   */
+  public getScale(): number {
+    return this.currentScale;
   }
 
   /**

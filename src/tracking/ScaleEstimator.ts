@@ -28,7 +28,7 @@ export interface ScaleEstimatorOptions {
   minConvergenceObservations?: number;
   /** Maximum scale value (sanity check). Default: 100 */
   maxScale?: number;
-  /** Minimum scale value (sanity check). Default: 0.01 */
+  /** Minimum scale value (sanity check). Default: 0.0001 */
   minScale?: number;
 }
 
@@ -90,7 +90,7 @@ export class ScaleEstimator {
     this.convergenceThreshold = options?.convergenceThreshold ?? 0.01;
     this.minConvergenceObservations = options?.minConvergenceObservations ?? 10;
     this.maxScale = options?.maxScale ?? 100;
-    this.minScale = options?.minScale ?? 0.01;
+    this.minScale = options?.minScale ?? 0.0001;
   }
 
   /**
