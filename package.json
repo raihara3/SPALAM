@@ -1,7 +1,27 @@
 {
   "name": "spalam",
-  "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "TypeScript-based WebAR library for real-time plane detection and tracking using computer vision",
+  "keywords": [
+    "webxr",
+    "ar",
+    "augmented-reality",
+    "computer-vision",
+    "plane-detection",
+    "depth-estimation",
+    "threejs",
+    "typescript"
+  ],
+  "homepage": "https://github.com/raihara3/SPALAM",
+  "bugs": {
+    "url": "https://github.com/raihara3/SPALAM/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raihara3/SPALAM.git"
+  },
+  "license": "Apache-2.0",
+  "author": "raihara3",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
