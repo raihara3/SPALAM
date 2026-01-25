@@ -1,0 +1,21 @@
+SPALAM
+Copyright 2025 raihara3
+
+This product includes software developed by raihara3.
+
+Third-Party Licenses
+====================
+
+This project uses the following third-party libraries:
+
+- three.js (https://threejs.org/)
+  Copyright © 2010-2025 three.js authors
+  Licensed under the MIT License
+
+- @huggingface/transformers (https://huggingface.co/docs/transformers.js)
+  Copyright 2018- The Hugging Face team
+  Licensed under the Apache License, Version 2.0
+
+- OpenCV.js (https://opencv.org/)
+  Copyright 2024 OpenCV team
+  Licensed under the Apache License, Version 2.0
