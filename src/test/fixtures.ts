@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import type { Point3D, Point2D } from "../types/Point";
 import type { Feature } from "../types/Feature";
 import type { PlaneModel } from "../types/Plane";

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * OpenCV.js Type Definitions
  * Based on OpenCV.js 4.x API

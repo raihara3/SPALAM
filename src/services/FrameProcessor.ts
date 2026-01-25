@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { FeatureDetector } from "../FeatureDetector";
 import { DepthEstimation } from "../DepthEstimation";
 import { Feature } from "../types";

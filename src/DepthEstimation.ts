@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { AutoModel, AutoProcessor, RawImage } from "@huggingface/transformers";
 import type { DepthModel, DepthProcessor } from "./types/Transformers";
 

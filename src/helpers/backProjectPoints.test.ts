@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { describe, it, expect } from "vitest";
 import backProjectPoints, { getCameraIntrinsics } from "./backProjectPoints";
 import type { Point3D } from "../types";

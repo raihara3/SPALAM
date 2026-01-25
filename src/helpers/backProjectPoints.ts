@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { Point3D } from "../types";
 import { CameraIntrinsicsConfig } from "../config/types";
 

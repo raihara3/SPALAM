@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { describe, it, expect } from "vitest";
 import computeConvexHull2D from "./computeConvexHull2D";
 import type { Point2D } from "../types";

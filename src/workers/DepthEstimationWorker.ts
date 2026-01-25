@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * Web Worker for depth estimation
  * 深度推定をメインスレッドから分離してパフォーマンスを向上

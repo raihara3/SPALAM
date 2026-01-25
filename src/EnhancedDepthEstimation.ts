@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { DepthEstimationService } from "./services/DepthEstimationService";
 import { DepthEstimationConfig } from "./config/types";
 import {

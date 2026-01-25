@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * 軽量サービスコンテナ
  * 依存性注入の基本機能のみを提供

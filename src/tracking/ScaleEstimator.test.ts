@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { describe, it, expect, beforeEach } from "vitest";
 import * as THREE from "three";
 import { ScaleEstimator } from "./ScaleEstimator";

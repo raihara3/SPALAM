@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * Web Worker for feature detection
  * 特徴点検出をメインスレッドから分離してパフォーマンスを向上

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025 raihara3
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 export * from "./Point";
 export * from "./Plane";
 export * from "./Pose";
