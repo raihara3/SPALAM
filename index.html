@@ -22,6 +22,70 @@
         object-fit: cover;
       }
 
+      /* 起動画面 */
+      #start-screen {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        color: white;
+        z-index: 1000;
+      }
+
+      #start-screen h1 {
+        font-size: 2.5rem;
+        margin-bottom: 1rem;
+        letter-spacing: 0.2em;
+      }
+
+      #start-screen p {
+        font-size: 0.9rem;
+        color: #aaa;
+        margin-bottom: 2rem;
+      }
+
+      #start-button {
+        background: #ff3700;
+        color: white;
+        border: none;
+        padding: 18px 48px;
+        font-size: 1.2rem;
+        border-radius: 50px;
+        cursor: pointer;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s;
+      }
+
+      #start-button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(102, 126, 234, 0.5);
+      }
+
+      #start-button:active {
+        transform: translateY(0);
+      }
+
+      #start-button:disabled {
+        background: #555;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      #start-status {
+        margin-top: 1.5rem;
+        font-size: 0.85rem;
+        color: #888;
+        min-height: 1.5em;
+      }
+
       /* ローディング表示 */
       #loading {
         position: fixed;
@@ -31,6 +95,7 @@
         color: white;
         text-align: center;
         z-index: 1000;
+        display: none;
       }
 
       .spinner {
@@ -63,36 +128,33 @@
     </style>
   </head>
   <body>
+    <div id="start-screen">
+      <h1>SPALAM</h1>
+      <p>WebAR Plane Detection</p>
+      <button id="start-button">Start AR</button>
+      <p id="start-status"></p>
+    </div>
+
     <div id="loading">
       <div class="spinner"></div>
       <p>SPALAM を初期化中...</p>
       <p id="loading-detail"><small>カメラの使用を許可してください</small></p>
     </div>
 
-    <script async src="https://docs.opencv.org/4.10.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script
+      async
+      src="https://docs.opencv.org/4.10.0/opencv.js"
+      onload="onOpenCvReady();"
+      type="text/javascript"
+    ></script>
     <script type="module" src="/src/main.ts"></script>
 
     <script>
       // OpenCV読み込み完了のグローバル関数
-      window.onOpenCvReady = function() {
-        console.log('OpenCV.js is ready');
+      window.onOpenCvReady = function () {
+        console.log("OpenCV.js is ready");
         window.cvReady = true;
       };
-
-      // ローディング表示を制御
-      window.addEventListener("load", () => {
-        // SPALAM初期化完了後にローディングを非表示
-        const checkSPALAMReady = () => {
-          // SPALAMの初期化状態をチェック（このロジックは後で調整）
-          setTimeout(() => {
-            const loading = document.getElementById("loading");
-            if (loading) {
-              loading.style.display = "none";
-            }
-          }, 3000); // 暫定的に3秒後に非表示
-        };
-        checkSPALAMReady();
-      });
 
       // モバイルデバイスでのタッチ操作を最適化
       document.addEventListener(
