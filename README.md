@@ -4,6 +4,12 @@
 
 TypeScript-based WebAR library for real-time plane detection and tracking using computer vision.
 
+<!-- ./examples/sample.mp4を埋め込む -->
+<video width="100%" controls>
+  <source src="./examples/sample.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ## Features
 
 - **Real-time Plane Detection**: RANSAC-based plane fitting from camera feed
@@ -40,17 +46,17 @@ Include OpenCV.js in your HTML:
 ## Quick Start
 
 ```typescript
-import { createSPALAM } from './src/SPALAM';
+import { createSPALAM } from "./src/SPALAM";
 
 // Create and configure SPALAM instance
 const spalam = createSPALAM()
-  .useWebGPU()        // Enable GPU acceleration
-  .enableDebug()      // Show feature points and depth map
+  .useWebGPU() // Enable GPU acceleration
+  .enableDebug() // Show feature points and depth map
   .build();
 
 // Listen for plane detection
-spalam.on('plane:detected', (plane) => {
-  console.log('Plane detected!', plane.position, plane.normal);
+spalam.on("plane:detected", (plane) => {
+  console.log("Plane detected!", plane.position, plane.normal);
 });
 
 // Start processing
@@ -62,27 +68,27 @@ await spalam.start();
 ### Builder Methods
 
 ```typescript
-import { createSPALAM } from './src/SPALAM';
+import { createSPALAM } from "./src/SPALAM";
 
 const spalam = createSPALAM()
   // Feature detection settings
   .features({
-    maxCorners: 200,       // Maximum feature points
-    qualityLevel: 0.005,   // Quality threshold
-    minDistance: 15,       // Minimum distance between points
-    showFeatures: true     // Visualize feature points
+    maxCorners: 200, // Maximum feature points
+    qualityLevel: 0.005, // Quality threshold
+    minDistance: 15, // Minimum distance between points
+    showFeatures: true, // Visualize feature points
   })
   // Depth estimation settings
   .depth({
-    modelId: 'depth-anything-v2-small',  // Depth model
-    device: 'webgpu',                     // 'webgpu' or 'cpu'
-    showDepth: true                       // Visualize depth map
+    modelId: "depth-anything-v2-small", // Depth model
+    device: "webgpu", // 'webgpu' or 'cpu'
+    showDepth: true, // Visualize depth map
   })
   // Plane fitting settings
   .plane({
-    ransacIterations: 2000,    // RANSAC iterations
-    ransacThreshold: 0.05,     // RANSAC threshold
-    smoothingIterations: 5     // Spatial smoothing
+    ransacIterations: 2000, // RANSAC iterations
+    ransacThreshold: 0.05, // RANSAC threshold
+    smoothingIterations: 5, // Spatial smoothing
   })
   .build();
 ```
@@ -91,18 +97,18 @@ const spalam = createSPALAM()
 
 ```typescript
 spalam
-  .on('frame:processed', (frameData) => {
+  .on("frame:processed", (frameData) => {
     console.log(`Features: ${frameData.features.length}`);
   })
-  .on('plane:detected', (planeData) => {
+  .on("plane:detected", (planeData) => {
     console.log(`Position: ${planeData.position}`);
     console.log(`Confidence: ${planeData.confidence}`);
   })
-  .on('state:changed', (event) => {
+  .on("state:changed", (event) => {
     console.log(`State: ${event.current}`);
   })
-  .on('error', (error) => {
-    console.error('Error:', error);
+  .on("error", (error) => {
+    console.error("Error:", error);
   });
 ```
 
@@ -123,12 +129,12 @@ spalam.dispose();
 
 ## Browser Support
 
-| Browser | Support |
-|---------|---------|
+| Browser     | Support       |
+| ----------- | ------------- |
 | Chrome 113+ | Full (WebGPU) |
-| Edge 113+ | Full (WebGPU) |
-| Safari 18+ | Full (WebGPU) |
-| Firefox | CPU fallback |
+| Edge 113+   | Full (WebGPU) |
+| Safari 18+  | Full (WebGPU) |
+| Firefox     | CPU fallback  |
 
 ## API Documentation
 
