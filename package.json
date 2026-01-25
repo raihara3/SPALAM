@@ -40,8 +40,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && tsc --emitDeclarationOnly",
+    "build:demo": "vite build --config vite.config.demo.ts",
     "build:types": "tsc --emitDeclarationOnly",
     "preview": "vite preview",
+    "preview:demo": "vite preview --config vite.config.demo.ts",
     "lint": "eslint 'src/**/*.{ts,tsx}'",
     "lint:fix": "eslint 'src/**/*.{ts,tsx}' --fix",
     "format": "prettier --write 'src/**/*.{ts,tsx,css}'",
