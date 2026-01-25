@@ -4,11 +4,8 @@
 
 TypeScript-based WebAR library for real-time plane detection and tracking using computer vision.
 
-<!-- ./examples/sample.mp4を埋め込む -->
-<video width="100%" controls>
-  <source src="./examples/sample.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+
+https://github.com/user-attachments/assets/9762daf9-ff60-41e2-b04f-45614b298b3f
 
 ## Features
 
