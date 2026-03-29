@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.5.1",
+  "checkpoint_id": "48e24e96da91",
+  "session_id": "e462a46e-e97c-4359-9d63-d167a76a7cba",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-29T16:59:25.543692Z",
+  "branch": "feature/update-scale",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".claude/settings.json",
+    "src/tracking/DistanceTracker.ts"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "03486cb7f885",
+  "token_usage": {
+    "input_tokens": 3943,
+    "cache_creation_tokens": 66360,
+    "cache_read_tokens": 1513749,
+    "output_tokens": 18965,
+    "api_call_count": 27
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-29T16:59:25.26516Z",
+    "agent_lines": 185,
+    "human_added": 41,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 226,
+    "agent_percentage": 81.85840707964603
+  }
+}

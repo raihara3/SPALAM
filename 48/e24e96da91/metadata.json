@@ -3,7 +3,7 @@
   "checkpoint_id": "48e24e96da91",
   "strategy": "manual-commit",
   "branch": "feature/update-scale",
-  "checkpoints_count": 7,
+  "checkpoints_count": 9,
   "files_touched": [
     ".claude/settings.json",
     ".gitignore",
@@ -22,13 +22,19 @@
       "transcript": "/48/e24e96da91/1/full.jsonl",
       "content_hash": "/48/e24e96da91/1/content_hash.txt",
       "prompt": "/48/e24e96da91/1/prompt.txt"
+    },
+    {
+      "metadata": "/48/e24e96da91/2/metadata.json",
+      "transcript": "/48/e24e96da91/2/full.jsonl",
+      "content_hash": "/48/e24e96da91/2/content_hash.txt",
+      "prompt": "/48/e24e96da91/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 93,
-    "cache_creation_tokens": 101704,
-    "cache_read_tokens": 4655601,
-    "output_tokens": 23961,
-    "api_call_count": 77
+    "input_tokens": 4036,
+    "cache_creation_tokens": 168064,
+    "cache_read_tokens": 6169350,
+    "output_tokens": 42926,
+    "api_call_count": 104
   }
 }
