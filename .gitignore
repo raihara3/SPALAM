@@ -140,3 +140,6 @@ memo/
 
 # TypeDoc generated documentation
 # docs/
+
+# Claude Code local settings
+.claude/settings.local.json
