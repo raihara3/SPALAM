@@ -143,3 +143,6 @@ memo/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Entire
+.entire/

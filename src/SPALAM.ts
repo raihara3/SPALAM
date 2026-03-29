@@ -382,6 +382,13 @@ export class SPALAM implements IServiceProvider {
   /** 再配置待ちフラグ（オブジェクトをcenterFeatureの位置に移動する必要がある） */
   private pendingReposition: boolean = false;
 
+  /** Previous orientation for computing rotation delta for DistanceTracker */
+  private readonly previousOrientationForScale: THREE.Quaternion =
+    new THREE.Quaternion();
+  private hasPreviousOrientationForScale: boolean = false;
+  private readonly reusableRotationDelta: THREE.Quaternion =
+    new THREE.Quaternion();
+
   // Reusable objects to prevent GC pressure from per-frame allocations
   private readonly reusablePlaneCenter: THREE.Vector3 = new THREE.Vector3();
   private readonly reusablePosition3D: THREE.Vector3 = new THREE.Vector3();
@@ -869,6 +876,17 @@ export class SPALAM implements IServiceProvider {
       stationaryAngularVelocityThreshold: 5.0,
     });
     this.distanceTracker.setInitialDepth(Math.abs(result.P0.z));
+
+    // Set camera intrinsics for rotation compensation
+    const videoWidth = this.video?.videoWidth || 640;
+    const videoHeight = this.video?.videoHeight || 480;
+    const intrinsics = getCameraIntrinsics(
+      this.config.plane.cameraIntrinsics,
+      videoWidth,
+      videoHeight
+    );
+    this.distanceTracker.setCameraIntrinsics(intrinsics);
+    this.hasPreviousOrientationForScale = false;
     // Note: initialPlaneScale is set in createPlaneFromResult before this method is called
 
     // 特徴点アンカーを初期化
@@ -1441,6 +1459,25 @@ export class SPALAM implements IServiceProvider {
 
     // 1. 距離トラッカーを更新してスケールを計算
     if (this.distanceTracker) {
+      // Compute rotation delta from IMU for rotation compensation
+      if (this.deviceMotionTracker?.isTracking()) {
+        const currentOrientation = this.deviceMotionTracker.getOrientation();
+        if (currentOrientation) {
+          if (this.hasPreviousOrientationForScale) {
+            // delta = inverse(previous) * current
+            this.reusableRotationDelta
+              .copy(this.previousOrientationForScale)
+              .invert()
+              .multiply(currentOrientation);
+            this.distanceTracker.setRotationDelta(
+              this.reusableRotationDelta
+            );
+          }
+          this.previousOrientationForScale.copy(currentOrientation);
+          this.hasPreviousOrientationForScale = true;
+        }
+      }
+
       const scale = this.distanceTracker.update(features);
       const targetScale = scale * this.initialPlaneScale;
       planeGroup.scale.set(targetScale, targetScale, targetScale);
