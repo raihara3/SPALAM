@@ -1,0 +1,155 @@
+memo/SCALE_TRACKING_IMPROVEMENT.mdの内容を確認して実装をしてください。不明点があれば実装前に質問してください
+
+---
+
+<task-notification>
+<task-id>a770ff69266beeb7f</task-id>
+<tool-use-id>toolu_01NuFEGx4UU7dh8dWfQ5U5Xd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/a770ff69266beeb7f.output</output-file>
+<status>completed</status>
+<summary>Agent "Clean up temporary files" completed</summary>
+<result>これらのファイルはすべて設定ファイルであり、一時ファイルやビルドアーティファクトではありません。
+
+- `/Users/aihara/10_dev/my/SPALAM/.claude/settings.json` -- Claude Code のフック設定ファイル(entire 連携用)
+- `/Users/aihara/10_dev/my/SPALAM/.entire/settings.json` -- entire ツールの設定ファイル
+- `/Users/aihara/10_dev/my/SPALAM/.entire/.gitignore` -- entire ディレクトリ用の gitignore
+
+いずれも現在のセッションが作成した一時ファイルではなく、ツールの設定ファイルです。削除対象となるコンパイル済みバイナリ、テスト用DBファイル、キャッシュファイル、ログファイルなどの一時ファイルは見つかりませんでした。
+
+削除すべきファイルはありません。リポジトリはクリーンな状態です。</result>
+<usage><total_tokens>11956</total_tokens><tool_uses>6</tool_uses><duration_ms>25174</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0fc8fb0f3579c4cd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/a0fc8fb0f3579c4cd.output</output-file>
+<status>completed</status>
+<summary>Agent "Review DistanceTracker changes" completed</summary>
+<result>Now I have a thorough understanding of the changes. Let me present the analysis.
+
+---
+
+Here is my critical review of the changes across `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts` and `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts`.
+
+---
+
+## Finding 1 [Medium] -- Unnecessary allocation from `clone()` every frame in SPALAM.ts
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts`, line 1469-1471
+
+```typescript
+this.distanceTracker.setRotationDelta(
+  this.reusableRotationDelta.clone()
+);
+```
+
+The `reusableRotationDelta` is already a dedicated reusable object. Calling `.clone()` here allocates a new `THREE.Quaternion` every single frame, defeating the purpose of the reusable pattern. Inside `DistanceTracker`, `setRotationDelta` simply stores the reference and it is consumed (then nulled) within the same `update()` call that follows immediately on line 1478. However, there is a subtlety: the `reusableRotationDelta` could be mutated before `update()` reads it if any intervening code touched it -- but no such code exists between line 1471 and 1478.
+
+Additionally, `getOrientation()` (line 340 of `DeviceMotionTracker.ts`) already returns a `.clone()`, so `currentOrientation` on line 1462 is already a fresh object. Then on line 1474, this cloned object is assigned directly to `previousOrientationForScale` -- which is correct since it won't be mutated externally.
+
+**Recommendation:** Remove the `.clone()` call. The `reusableRotationDelta` value is consumed synchronously before any mutation can occur.
+
+---
+
+## Finding 2 [Medium] -- `previousOrientationForScale` stores a clone but could use a reusable quaternion
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts`, line 1474
+
+```typescript
+this.previousOrientationForScale = currentOrientation;
+```
+
+Since `getOrientation()` returns a clone every call, `currentOrientation` is a new object each frame. This means `previousOrientationForScale` holds a new allocation each frame. A more GC-friendly approach would be to make `previousOrientationForScale` a pre-allocated `THREE.Quaternion` and use `.copy()` instead.
+
+**Recommendation:** Change the field from `Quaternion | null` to a pre-allocated `Quaternion` with a boolean flag indicating initialization, and use `.copy(currentOrientation)`.
+
+---
+
+## Finding 3 [Low] -- Rotation compensation creates tuple allocations per feature per frame
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts`, lines 230-255
+
+`compensateRotation` returns `[number, number]` (a new 2-element array each call). It is called twice per `calculateDistance` invocation (line 261-262), and `calculateDistance` is called for every tracked pair plus every candidate new pair per frame. With `maxPairs=20`, this is at minimum 40 array allocations per frame, plus new pairs.
+
+The `ray`, `rotatedRay`, and `inverseRotation` vectors are properly reused -- good. But the tuple return is not.
+
+**Recommendation:** Refactor to use a reusable output object or inline the compensation logic into `calculateDistance` to avoid tuple allocations.
+
+---
+
+## Finding 4 [Low] -- `previousQuaternion` field in DistanceTracker is unused dead code
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts`, line 99
+
+The diff adds `private previousQuaternion: THREE.Quaternion | null = null;` and it is reset in `reset()` (line 644), but it is never read or written anywhere else. This is dead code.
+
+**Recommendation:** Remove `previousQuaternion` from `DistanceTracker`.
+
+---
+
+## Finding 5 [Low] -- EMA smoothing alpha=0.3 initialization mismatch
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts`, lines 96, 203-205
+
+`smoothedScale` is initialized to `1.0`. When the first valid `rawScale` arrives (which should also be near 1.0 initially), the EMA computes `0.3 * rawScale + 0.7 * 1.0`. This is correct for a cold start. However, if `currentScale` has drifted significantly before `smoothedScale` is reset (e.g., due to a `reset()` call mid-session where pairs take time to stabilize), the first few frames after pairs become stable will be pulled toward 1.0 by the EMA history.
+
+The alpha value of 0.3 is reasonable for 30fps AR tracking -- it provides about a 3-frame effective window. No issue with the math itself.
+
+**Assessment:** No action needed; behavior is acceptable. Just noting the characteristic.
+
+---
+
+## Finding 6 [Informational] -- Baseline scale calculation correctness
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts`, lines 472-479, 503-504
+
+The old code normalized `initialDistance` by dividing by `currentScale` at pair creation time: `initialDistance = distance / currentScale`. The new code stores the raw `distance` as `initialDistance` and snapshots `baselineScale = currentScale`. Then at scale computation time: `scale = (currentDistance / initialDistance) * baselineScale`.
+
+Mathematically: if at creation time the "true" scale is `S_base`, and the measured distance is `d_init`, then later when distance is `d_current`, the absolute scale is `(d_current / d_init) * S_base`. This is equivalent to the old formula: `d_current / (d_init / S_base) = (d_current * S_base) / d_init`. The two formulations are algebraically identical.
+
+The new approach is actually more numerically stable because it avoids a division at pair creation time that could introduce floating-point error that compounds. The baseline snapshot approach also makes the code more readable and debuggable.
+
+**Assessment:** The math is correct. This is a good change.
+
+---
+
+## Finding 7 [Informational] -- Quaternion delta math correctness
+
+**File:** `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts`, lines 1465-1468
+
+```typescript
+this.reusableRotationDelta
+  .copy(this.previousOrientationForScale)  // delta = prev
+  .invert()                                 // delta = inv(prev)
+  .multiply(currentOrientation);            // delta = inv(prev) * current
+```
+
+This computes `delta = inv(previous) * current`, which represents the rotation that transforms from the previous frame's orientation to the current frame's orientation, expressed in the previous frame's local coordinate system. This is the standard formula for rotation delta.
+
+Then in `compensateRotation`, the inverse of this delta is applied to unproject/reproject feature points, effectively "undoing" the rotation. This is correct for removing the rotational component of apparent feature motion.
+
+**Assessment:** The quaternion math is correct.
+
+---
+
+## Summary
+
+| # | Severity | Issue | File |
+|---|----------|-------|------|
+| 1 | Medium | Unnecessary `.clone()` allocation per frame | SPALAM.ts:1469 |
+| 2 | Medium | `previousOrientationForScale` allocates new quaternion per frame | SPALAM.ts:1474 |
+| 3 | Low | Tuple allocations in `compensateRotation` per feature pair | DistanceTracker.ts:230 |
+| 4 | Low | Dead code: `previousQuaternion` field never used | DistanceTracker.ts:99 |
+
+Findings 5-7 are informational and require no action. The quaternion math and baseline scale calculation are both correct.
+
+Would you like me to apply fixes for any of these findings? I can address them individually or as a group.</result>
+<usage><total_tokens>25125</total_tokens><tool_uses>7</tool_uses><duration_ms>69868</duration_ms></usage>
+</task-notification>
+
+---
+
+動作が安定していません。近づけると小さくなり、数秒送れでいっきに大きくなります。
