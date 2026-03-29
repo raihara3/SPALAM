@@ -1,0 +1,13 @@
+.entireはgitignoreしなくていいやつ？
+
+---
+
+お願いします
+
+---
+
+mada
+
+---
+
+まだgit statusで.entire/が表示されているよ
