@@ -1,0 +1,179 @@
+特徴点が少ない平面に向けるとトラッキングしている特徴点が横滑りし、その影響を受けて3Dオブジェクトまでドリフトしてしまいます。この問題を改善する方法はありますか？
+
+---
+
+<task-notification>
+<task-id>a6b94cabdd2f5f531</task-id>
+<tool-use-id>toolu_017AKUbvoXMUozFoi2PLLMep</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/a6b94cabdd2f5f531.output</output-file>
+<status>completed</status>
+<summary>Agent "Clean up temporary files" completed</summary>
+<result>一時ファイルやビルドアーティファクトは見つかりませんでした。
+
+リポジトリ内の未追跡ファイルは以下の2つのみです:
+
+- `/Users/aihara/10_dev/my/SPALAM/src/tracking/FeatureQualityMonitor.ts`
+- `/Users/aihara/10_dev/my/SPALAM/src/tracking/PlaneModelPersistence.ts`
+
+これらはいずれも TypeScript のソースコードファイルであり、一時ファイル、ビルドアーティファクト、キャッシュ、ログ、データベースファイルなどには該当しません。削除対象はありません。</result>
+<usage><total_tokens>10744</total_tokens><tool_uses>2</tool_uses><duration_ms>11954</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa7920d41e01c7944</task-id>
+<tool-use-id>toolu_01Hk21Vb64RbtaqDX53YG5y1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/aa7920d41e01c7944.output</output-file>
+<status>completed</status>
+<summary>Agent "Update rules if needed" completed</summary>
+<result>No `.claude/rules` files exist in the project at `/Users/aihara/10_dev/my/SPALAM`. Since the task is to only update existing rules files that are clearly outdated, and there are no existing rules files to update, there is nothing to do here.
+
+No changes were made. The project at `/Users/aihara/10_dev/my/SPALAM` does not have any `.claude/rules` files, so the patterns from the tracking module (Options interface pattern, reusable THREE.js objects, reset/dispose methods, export pattern) cannot be reflected in an update to existing rules.</result>
+<usage><total_tokens>10742</total_tokens><tool_uses>2</tool_uses><duration_ms>7984</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a8d758b91513b99ac</task-id>
+<tool-use-id>toolu_01BAnFfvH11hVMnwrxdNs4AN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/a8d758b91513b99ac.output</output-file>
+<status>completed</status>
+<summary>Agent "Review drift reduction changes" completed</summary>
+<result>Now I have a complete picture. Here is my analysis.
+
+---
+
+## Critical Review: Drift Reduction for Featureless Planes
+
+### Findings
+
+**1. [Medium] Division by zero in `getRecoveryBlendFactor` (`PlaneModelPersistence.ts:114`)**
+
+```typescript
+return Math.min(1.0, this.recoveryFrame / this.recoveryBlendFrames);
+```
+
+If `recoveryBlendFrames` is set to `0` via options, this produces `Infinity` (or `NaN` when `recoveryFrame` is also 0). While `Math.min(1.0, Infinity)` would clamp to 1.0, a `0/0` case yields `NaN`, which would propagate through the lerp calculation at SPALAM.ts line 1231-1232, causing the plane position to become `NaN` and visually disappear.
+
+**Recommendation**: Add a guard in the constructor or in the method itself:
+```typescript
+if (this.recoveryBlendFrames <= 0) return 1.0;
+```
+
+---
+
+**2. [Medium] Confidence decays indefinitely toward zero but never fully expires (`PlaneModelPersistence.ts:67-68`)**
+
+During DROUGHT, `confidence` is multiplied by `0.995` every frame. At 30fps, after 10 seconds (300 frames), confidence is `0.995^300 = ~0.22`. After 60 seconds, it is `0.995^1800 = ~0.00012`. The value asymptotically approaches zero but never reaches it, meaning `isConfidenceSufficient()` will eventually return false, but the locked model itself is never released (the `locked` object remains allocated and stale). If the user moves the camera to a completely different scene during a long DROUGHT, recovery could snap the plane back to an irrelevant position from minutes ago.
+
+**Recommendation**: Add a maximum DROUGHT duration or explicitly set `locked = null` when confidence drops below the minimum threshold:
+```typescript
+public updateDuringDrought(): void {
+  if (!this.locked) return;
+  this.locked.confidence *= this.confidenceDecayRate;
+  if (this.locked.confidence < this.minimumConfidenceForRecovery) {
+    this.locked = null;
+  }
+}
+```
+
+---
+
+**3. [Medium] State machine: upward transition counter not reset on downward transitions (`FeatureQualityMonitor.ts:62-64`)**
+
+When the state transitions (e.g., POOR -> DROUGHT), `sustainedUpwardFrames` is reset to 0 at line 64. However, this reset only happens when `this.state !== previousState`. Consider this scenario in the POOR state: `sustainedUpwardFrames` accumulates to 4 (just below threshold of 5), then the count drops below `poorToRichThreshold` for one frame (resetting to 0 at line 91), then rises again. This is correct behavior -- the counter does reset at line 91 in the `else` branch. So this is actually properly handled.
+
+However, there is still a subtle issue: `framesInCurrentState` increments without bound (line 67). Over a very long session (hours), this becomes a very large number. While it is only a counter and never used for arithmetic that could overflow in JS (numbers are doubles), it is unused externally except via `getFramesInCurrentState()`. This is a minor concern.
+
+---
+
+**4. [Low] `Date.now()` call in hot-path-adjacent code (`PlaneModelPersistence.ts:60`)**
+
+`lockPosition` calls `Date.now()` but `lockTimestamp` is never read anywhere in the codebase. This is dead code that performs an unnecessary syscall.
+
+**Recommendation**: Remove `lockTimestamp` from `LockedPlaneModel` and the `Date.now()` call, or use it for the max-DROUGHT-duration check suggested in finding #2.
+
+---
+
+**5. [Low] `PlaneModelPersistence.reset()` sets `locked = null`, creating GC pressure (`PlaneModelPersistence.ts:122`)**
+
+The `reset()` method nullifies `locked`, meaning the next `lockPosition` call allocates a new object with a new `THREE.Vector3`. This is called during `performMemoryReset` in SPALAM.ts. While the `reusablePosition` field is properly reused (good), the `locked` object is not. For consistency with the GC-pressure-avoidance pattern already used in this file, `reset()` should preserve the `locked` object and just reset its values.
+
+**Recommendation**:
+```typescript
+public reset(): void {
+  if (this.locked) {
+    this.locked.position.set(0, 0, 0);
+    this.locked.confidence = 0;
+    this.locked.lockTimestamp = 0;
+  }
+  this.locked = null; // Keep this to truly "unlock"
+  this.recovering = false;
+  this.recoveryFrame = 0;
+}
+```
+
+Actually, since `reset` semantically means "no locked plane", nullifying is correct. The re-allocation in `lockPosition` is infrequent (only on RICH->DROUGHT transitions), so this is acceptable. I'll keep this as Low.
+
+---
+
+**6. [Low] No validation of user-provided options (`FeatureQualityMonitor.ts`, `PlaneModelPersistence.ts`)**
+
+Both constructors accept options without validating ranges. For example, `confidenceDecayRate` could be set to a value > 1 (causing confidence to grow instead of decay), or negative thresholds could break the state machine. Since these are library-internal classes not directly exposed to end-user input, the risk is low.
+
+---
+
+### Summary
+
+| # | Severity | File | Issue |
+|---|----------|------|-------|
+| 1 | Medium | `PlaneModelPersistence.ts:114` | Division by zero when `recoveryBlendFrames = 0` |
+| 2 | Medium | `PlaneModelPersistence.ts:67` | Stale locked plane never released during extended DROUGHT |
+| 3 | Low | `PlaneModelPersistence.ts:60` | Dead code: `lockTimestamp` written but never read |
+| 4 | Low | `PlaneModelPersistence.ts:122` | Minor GC from re-allocation on reset (acceptable) |
+
+**No security vulnerabilities were identified.** These classes handle internal numerical state only, with no user input, network calls, or file system access.
+
+**No critical performance issues were found in the hot path.** The render loop additions (SPALAM.ts lines 1186-1240) use pre-allocated `reusablePlaneCenter`, avoid object creation, and the `FeatureQualityMonitor.update()` loop over features is O(n) which is appropriate. The `PlaneModelPersistence` methods called per-frame are all O(1).
+
+Findings #1 and #2 are the most actionable. Would you like me to apply fixes for any of these issues?</result>
+<usage><total_tokens>19462</total_tokens><tool_uses>7</tool_uses><duration_ms>53461</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a20dc3b04f737014b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/536e89ee-8c4d-403d-b2af-79af01d9a8a3/tasks/a20dc3b04f737014b.output</output-file>
+<status>completed</status>
+<summary>Agent "Update docs for drift changes" completed</summary>
+<result>Now I can see the actual changes on the `feature/improvement-drift` branch vs main. The new exports for `FeatureQualityMonitor` and `PlaneModelPersistence` are indeed part of this branch's diff. Let me now review the documentation to see what needs updating.
+
+Looking at the documentation:
+
+**CLAUDE.md**: The "Current Development Focus" section (line 79-84) mentions `feature/plane-tracking` branch specifically. The current branch is `feature/improvement-drift`, and the new tracking components (FeatureQualityMonitor, PlaneModelPersistence) add drift reduction capabilities. However, the CLAUDE.md already describes tracking components at a high level under "Service-Oriented Architecture" and "Processing Pipeline" - neither of which specifically list individual tracking modules. The new files are in `src/tracking/` which is not individually enumerated in CLAUDE.md.
+
+**README.md**: The README describes user-facing features. It doesn't list internal tracking components. The Roadmap mentions "Enhanced plane detection accuracy" which is loosely related but not outdated.
+
+The key question: is anything in the docs **clearly outdated** due to these changes?
+
+The `Current Development Focus` section in CLAUDE.md references `feature/plane-tracking` branch, but we're now on `feature/improvement-drift`. That said, this is a different branch name issue, not something caused by these specific drift reduction changes.
+
+The architecture section doesn't enumerate individual tracking modules, so adding two new ones doesn't make it outdated. The Processing Pipeline also doesn't need changes since these new components operate within the existing plane fitting/tracking step.
+
+Based on my analysis, **neither CLAUDE.md nor README.md needs updates** due to these specific changes. Here is why:
+
+1. **CLAUDE.md Architecture Overview** does not enumerate individual `src/tracking/` modules -- it describes high-level services (FeatureDetectionService, PlaneFittingService, etc.). The new `FeatureQualityMonitor` and `PlaneModelPersistence` are internal tracking components, not top-level services registered in the ServiceContainer. Adding them to the architecture list would be inconsistent with the current level of abstraction.
+
+2. **CLAUDE.md Processing Pipeline** describes the 6-step frame processing flow. Drift reduction operates within the existing "RANSAC plane fitting" and "AR rendering" steps rather than adding a new pipeline stage.
+
+3. **CLAUDE.md Current Development Focus** already mentions tracking implementation as ongoing work. While it references `feature/plane-tracking` rather than `feature/improvement-drift`, that discrepancy predates these changes.
+
+4. **README.md** describes user-facing features and API. The drift reduction is an internal implementation detail that doesn't change the public API surface.
+
+No files were modified.</result>
+<usage><total_tokens>17016</total_tokens><tool_uses>11</tool_uses><duration_ms>50868</duration_ms></usage>
+</task-notification>
