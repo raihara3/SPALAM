@@ -232,6 +232,19 @@ export class FeatureDetector {
     const src = this.cv.imread(this.processCanvas);
     this.cv.cvtColor(src, gray, this.cv.COLOR_RGBA2GRAY);
 
+    // 4) Convert to gradient magnitude image so that optical flow
+    //    tracks structural edges (high gradient) rather than shadows
+    //    (low, smooth gradient). This makes tracking shadow-invariant.
+    const gradX = new this.cv.Mat();
+    const gradY = new this.cv.Mat();
+    this.cv.Sobel(gray, gradX, this.cv.CV_16S, 1, 0);
+    this.cv.Sobel(gray, gradY, this.cv.CV_16S, 0, 1);
+    this.cv.convertScaleAbs(gradX, gradX);
+    this.cv.convertScaleAbs(gradY, gradY);
+    this.cv.addWeighted(gradX, 0.5, gradY, 0.5, 0, gray);
+    gradX.delete();
+    gradY.delete();
+
     try {
       // 4) 初回検出 or 追跡点不足時の特徴点検出
       if (!this.prevGray) {
