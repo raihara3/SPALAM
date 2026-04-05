@@ -202,3 +202,7 @@ this.cv.ORB_create is not a function. (In
 ---
 
 結構改善されました！対応内容を改めて教えてください
+
+---
+
+コミットしてください
