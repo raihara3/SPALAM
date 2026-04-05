@@ -12,6 +12,7 @@ declare namespace cv {
   const CV_8UC1: number;
   const CV_8UC3: number;
   const CV_8UC4: number;
+  const CV_16S: number;
   const CV_32FC1: number;
   const CV_32FC2: number;
   const CV_64FC1: number;
@@ -162,6 +163,51 @@ declare namespace cv {
 
   // Color conversion
   function cvtColor(src: Mat, dst: Mat, code: number, dstCn?: number): void;
+
+  // Image filtering
+  function GaussianBlur(
+    src: Mat,
+    dst: Mat,
+    ksize: Size,
+    sigmaX: number,
+    sigmaY?: number,
+    borderType?: number
+  ): void;
+
+  // Histogram equalization
+  class CLAHE {
+    constructor(clipLimit?: number, tileGridSize?: Size);
+    apply(src: Mat, dst: Mat): void;
+    delete(): void;
+  }
+
+  // Image gradients and arithmetic
+  function Sobel(
+    src: Mat,
+    dst: Mat,
+    ddepth: number,
+    dx: number,
+    dy: number,
+    ksize?: number,
+    scale?: number,
+    delta?: number,
+    borderType?: number
+  ): void;
+  function convertScaleAbs(
+    src: Mat,
+    dst: Mat,
+    alpha?: number,
+    beta?: number
+  ): void;
+  function addWeighted(
+    src1: Mat,
+    alpha: number,
+    src2: Mat,
+    beta: number,
+    gamma: number,
+    dst: Mat,
+    dtype?: number
+  ): void;
 
   // Feature detection
   function goodFeaturesToTrack(
