@@ -3,9 +3,10 @@
   "checkpoint_id": "6265622b00b9",
   "strategy": "manual-commit",
   "branch": "feature/improvement-drift",
-  "checkpoints_count": 6,
+  "checkpoints_count": 15,
   "files_touched": [
-    "src/FeatureDetector.ts"
+    "src/FeatureDetector.ts",
+    "src/opencv.d.ts"
   ],
   "sessions": [
     {
@@ -13,13 +14,19 @@
       "transcript": "/62/65622b00b9/0/full.jsonl",
       "content_hash": "/62/65622b00b9/0/content_hash.txt",
       "prompt": "/62/65622b00b9/0/prompt.txt"
+    },
+    {
+      "metadata": "/62/65622b00b9/1/metadata.json",
+      "transcript": "/62/65622b00b9/1/full.jsonl",
+      "content_hash": "/62/65622b00b9/1/content_hash.txt",
+      "prompt": "/62/65622b00b9/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 71,
-    "cache_creation_tokens": 89758,
-    "cache_read_tokens": 3375764,
-    "output_tokens": 14408,
-    "api_call_count": 51
+    "input_tokens": 2698,
+    "cache_creation_tokens": 209377,
+    "cache_read_tokens": 11252235,
+    "output_tokens": 44389,
+    "api_call_count": 134
   }
 }

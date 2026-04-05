@@ -1,0 +1,204 @@
+今トラッキングしている特徴点が陰の影響を受けて、カメラを動かしていないのに特徴点が動いてしまい精度を低下させている問題があります。
+
+そこで一般的なSLAMエンジンの仕組みを確認してきたので共有します。
+この情報と今のSPALAMの実装を比較して改善案を提案してください。
+
+--
+ORB記述子の利用: これまでのタスク設計にもあったように、特徴点の表現には ORB（Oriented FAST and Rotated BRIEF） 形式が用いられています。ORBは特徴点の形状や方向をバイナリデータとして表現するため計算が高速であり、Web環境のAlvaAR等でもリアルタイム処理が可能です
+。
+連続トラッキングと再照合: 検出された特徴点はフレーム間で追跡されます（これまでの設計メモにあるオプティカルフローやBFMatcherの活用など）。さらに、画面外から戻った際の再ローカライズやループ閉鎖（Loop Closure）の際には、Bag of Words（DBoW2 や iBoW-LCD） を用いて、過去の「キーフレーム」に保存された特徴点群と現在の映像を高速にマッチングさせます
+。
+数学的な最適化: 追跡できた特徴点（2D）と地図上の点（3D）の対応関係から、Ceres Solver や g2o といったソルバーを用いてPnP計算やバンドル調整を行い、カメラのポーズを最適化します
+。
+
+---
+
+2のORBからやりたいです。ただその前に、webで耐えられる負荷ですか？
+
+---
+
+お願いします
+
+---
+
+<task-notification>
+<task-id>ac41739100fa73205</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/0186175d-c708-45b5-b371-323466d58729/tasks/ac41739100fa73205.output</output-file>
+<status>completed</status>
+<summary>Agent "Clean up temporary files" completed</summary>
+<result>未追跡のファイルは見つかりませんでした。リポジトリの作業ツリーはクリーンな状態で、一時ファイルやビルドアーティファクトは存在しません。削除が必要なファイルはありません。</result>
+<usage><total_tokens>10744</total_tokens><tool_uses>1</tool_uses><duration_ms>7831</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a78d4572acbf333cd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/0186175d-c708-45b5-b371-323466d58729/tasks/a78d4572acbf333cd.output</output-file>
+<status>completed</status>
+<summary>Agent "Update docs for ORB hybrid" completed</summary>
+<result>Two sections of `/Users/aihara/10_dev/my/SPALAM/CLAUDE.md` were updated:
+
+1. **Line 36 (FeatureDetectionService description)**: Changed from "OpenCV-based feature detection (ORB, SIFT algorithms)" to "OpenCV-based feature detection with hybrid ORB descriptor matching + optical flow tracking" to reflect that the system now uses a combined approach rather than standalone ORB/SIFT detection.
+
+2. **Line 61 (OpenCV Integration section)**: Changed from "Feature detection algorithms: ORB (default) and SIFT" to a description of the hybrid approach -- optical flow for fast inter-frame tracking with periodic ORB descriptor matching every 5 frames to correct drift from lighting changes.
+
+The Processing Pipeline section (steps 1-6) was left unchanged because it describes the high-level pipeline at a coarser granularity where "Feature detection" is still an accurate summary of step 2.</result>
+<usage><total_tokens>14730</total_tokens><tool_uses>7</tool_uses><duration_ms>34069</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a67a22d3d9a473956</task-id>
+<tool-use-id>toolu_01Lfux96m5brQ4e5vz1sDorr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/0186175d-c708-45b5-b371-323466d58729/tasks/a67a22d3d9a473956.output</output-file>
+<status>completed</status>
+<summary>Agent "Review ORB hybrid tracking changes" completed</summary>
+<result>Now I have a thorough understanding of all the changes. Let me present my findings.
+
+---
+
+## Critical Review: feature/improvement-drift Branch
+
+`FeatureDetector.ts` に対する変更は diff に含まれていませんでした。実際に変更されたファイルは以下の通りです:
+
+- `src/tracking/DistanceTracker.ts` (回転補償、EMAスムージング、ベースラインスケール)
+- `src/tracking/FeatureQualityMonitor.ts` (新規ファイル)
+- `src/tracking/PlaneModelPersistence.ts` (新規ファイル)
+- `src/SPALAM.ts` (上記コンポーネントの統合)
+- `src/main.ts` (デバッグパネル追加)
+
+以下、発見した問題点を重大度別に報告します。
+
+---
+
+### [Medium-1] `setRotationDelta` がクォータニオンの参照を保持し、呼び出し側で変更される可能性
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts` (行 143)
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts` (行 1543-1545)
+
+`setRotationDelta()` は渡された `THREE.Quaternion` の参照をそのまま保持します。`SPALAM.ts` 側では `this.reusableRotationDelta` を渡しており、これは再利用オブジェクトです。`DistanceTracker.update()` が呼ばれる前に次フレームで `reusableRotationDelta` が上書きされることは現状ないですが、将来的なリファクタリングで壊れやすい設計です。`compensateRotation` 内で `this.rotationDelta` を直接 `.copy()` して使っているため、現時点では実害はありませんが、防御的に `setRotationDelta` 内で `.copy()` すべきです。
+
+---
+
+### [Medium-2] `getLockedPosition()` が内部再利用オブジェクトの参照を返す
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/tracking/PlaneModelPersistence.ts` (行 75-78)
+
+```typescript
+public getLockedPosition(): THREE.Vector3 | null {
+    if (!this.locked) return null;
+    return this.reusablePosition.copy(this.locked.position);
+}
+```
+
+`reusablePosition` は GC 圧力軽減のための再利用オブジェクトですが、呼び出し側が返り値を保持して後で使った場合、次回の `getLockedPosition()` 呼び出しで値が上書きされます。現在の呼び出しパスでは即座に消費されるため問題ないですが、API としては危険です。
+
+---
+
+### [Medium-3] `compensateRotation` で `inverseRotation` の繰り返し計算
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts` (行 230-259)
+
+`compensateRotation` は `calculateDistance` から1フレームにつき2回呼ばれ、さらにペア数分繰り返されます（最大20ペア = 最大40回/フレーム）。毎回 `this.inverseRotation.copy(this.rotationDelta).invert()` を実行していますが、`rotationDelta` はフレーム内で変わらないため、1フレームにつき1回だけ逆回転を計算してキャッシュすべきです。
+
+---
+
+### [Medium-4] `addNewPairs` 内で回転補償付き距離計算は不要な可能性
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts` (行 469)
+
+新しいペア追加時の `initialDistance` が回転補償込みの `calculateDistance` で計算されます。これは意図的かもしれませんが、回転補償は「前フレームと現フレーム間の回転差」を除去するものです。`initialDistance` のベースラインとして使う場合、このフレームの回転補償が正しいベースラインになるかは疑問です。特に `rotationDelta` が `null` の場合（IMU未使用時）は問題ありませんが、IMU使用時にはベースライン距離が回転補償の影響を受け、次フレーム以降の `currentDistance` との比較で不整合が生じる可能性があります。
+
+---
+
+### [Low-1] `smoothedScale` の初期値と最初の更新の不整合
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/tracking/DistanceTracker.ts` (行 96, 205-207)
+
+`smoothedScale` は初期値 `1.0` で、最初の `rawScale` が来たときに EMA でブレンドされます。例えば `rawScale` が `0.5` で `smoothingAlpha` が `0.5` の場合、`smoothedScale = 0.5 * 0.5 + 0.5 * 1.0 = 0.75` となり、最初のスケール推定がバイアスされます。`reset()` 後や初回更新時に `smoothedScale` を `rawScale` で初期化する方が正確です。
+
+---
+
+### [Low-2] デバッグパネルがプロダクションビルドに含まれる
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/main.ts` (行 197, 257-308)
+
+`createDebugPanel` が無条件に呼ばれ、ライブラリのデモページに常にデバッグUIが表示されます。`main.ts` はデモ用エントリーポイントのようなので致命的ではありませんが、条件付き（例: URLパラメータやビルドモード）にすることが望ましいです。
+
+---
+
+### [Low-3] `SPALAM.ts` の `updatePlaneWorldPosition` で毎フレーム `new THREE.Vector3()` を生成
+
+**ファイル**: `/Users/aihara/10_dev/my/SPALAM/src/SPALAM.ts` (行 1061)
+
+```typescript
+const targetPosition = camera.localToWorld(new THREE.Vector3(x, y, -z));
+```
+
+これは変更前からの既存コードですが、この差分で `lerpFactor` パラメータが追加されたことで注目しました。毎フレームの `new THREE.Vector3()` は GC 圧力を生みます。クラスには既に `reusablePosition3D` などの再利用オブジェクトがあるので、ここでも再利用パターンを適用すべきです。
+
+---
+
+以上6件の指摘です。対処が必要なものがあれば、番号で指定してください。修正を適用します。</result>
+<usage><total_tokens>32823</total_tokens><tool_uses>7</tool_uses><duration_ms>71481</duration_ms></usage>
+</task-notification>
+
+---
+
+エラーがでました。
+
+  ┌────────┬────────────────────────────────┬──────────────────┬────────────┐
+  │ 優先度 │             改善案             │       効果       │ 実装コスト │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 1      │ 静止検出と更新抑制             │ 影の問題に即効   │ 低         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 2      │ ORB記述子マッチングへの移行    │ 根本的な耐性向上 │ 中         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 3      │ 記述子距離による外れ値フィルタ │ 補完的な精度向上 │ 低         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 4      │ キーフレーム再照合             │ ロスト時の復帰   │ 中〜高     │
+  └────────┴────────────────────────────────┴──────────────────┴────────────┘
+
+---
+
+エラーがでました。
+  ┌────────┬────────────────────────────────┬──────────────────┬────────────┐
+  │ 優先度 │             改善案             │       効果       │ 実装コスト │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 1      │ 静止検出と更新抑制             │ 影の問題に即効   │ 低         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 2      │ ORB記述子マッチングへの移行    │ 根本的な耐性向上 │ 中         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 3      │ 記述子距離による外れ値フィルタ │ 補完的な精度向上 │ 低         │
+  ├────────┼────────────────────────────────┼──────────────────┼────────────┤
+  │ 4      │ キーフレーム再照合             │ ロスト時の復帰   │ 中〜高     │
+  └────────┴────────────────────────────────┴──────────────────┴────────────┘
+
+---
+
+エラーがでました。
+this.cv.ORB_create is not a function. (In
+'this.cv.ORB_create(this.orbMaxFeatures)',
+'this.cv.ORB_create' is undefined)
+
+---
+
+相変わらず陰の影響を大きく受けているのと処理が重くなったように感じます。
+差分を元に戻します。代わりに輝度をもう少しざっくりにできないかな？
+細かすぎて陰を拾ってしまうのでは？
+
+---
+
+効果はかなり薄いです
+
+---
+
+まだまだ不十分です
+
+---
+
+結構改善されました！対応内容を改めて教えてください
