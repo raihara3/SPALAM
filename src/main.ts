@@ -194,6 +194,7 @@ const startSPALAM = async () => {
     console.log("SPALAM started successfully");
     spalam.setDrawFeaturesEnabled(false);
     hideLoading();
+    createDebugPanel(spalam);
 
     // モバイルデバイスでIMUトラッキングを有効化
     if (isMobile) {
@@ -251,6 +252,61 @@ const handleStartClick = async () => {
     button.textContent = "Start AR";
     updateStatus("起動に失敗しました。再度お試しください。");
   }
+};
+
+// デバッグパネルの作成
+const createDebugPanel = (instance: SPALAM) => {
+  const panel = document.createElement("div");
+  panel.id = "debug-panel";
+  panel.style.cssText = `
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  `;
+
+  const createToggleButton = (
+    label: string,
+    initial: boolean,
+    onChange: (enabled: boolean) => void,
+  ): HTMLButtonElement => {
+    const button = document.createElement("button");
+    let enabled = initial;
+
+    const updateStyle = () => {
+      button.textContent = `${label}: ${enabled ? "ON" : "OFF"}`;
+      button.style.cssText = `
+        background: ${enabled ? "rgba(0,200,0,0.8)" : "rgba(100,100,100,0.8)"};
+        color: white;
+        border: none;
+        padding: 8px 14px;
+        border-radius: 5px;
+        font-family: monospace;
+        font-size: 13px;
+        cursor: pointer;
+      `;
+    };
+
+    updateStyle();
+    button.addEventListener("click", () => {
+      enabled = !enabled;
+      updateStyle();
+      onChange(enabled);
+    });
+
+    return button;
+  };
+
+  panel.appendChild(
+    createToggleButton("Features", instance.isDrawFeaturesEnabled(), (enabled) => {
+      instance.setDrawFeaturesEnabled(enabled);
+    }),
+  );
+
+  document.body.appendChild(panel);
 };
 
 // DOM読み込み完了後にイベントリスナーを設定
