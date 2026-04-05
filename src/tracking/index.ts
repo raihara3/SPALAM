@@ -24,6 +24,11 @@ export { LocalBundleAdjustment } from "./LocalBundleAdjustment";
 export { IMUPreintegration } from "./IMUPreintegration";
 export { ScaleEstimator } from "./ScaleEstimator";
 export { VisualInertialOptimizer } from "./VisualInertialOptimizer";
+export {
+  FeatureQualityMonitor,
+  FeatureQualityState,
+} from "./FeatureQualityMonitor";
+export { PlaneModelPersistence } from "./PlaneModelPersistence";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -48,3 +53,8 @@ export type {
   VisualInertialOptimizerOptions,
   IMUConstraint,
 } from "./VisualInertialOptimizer";
+export type { FeatureQualityMonitorOptions } from "./FeatureQualityMonitor";
+export type {
+  PlaneModelPersistenceOptions,
+  LockedPlaneModel,
+} from "./PlaneModelPersistence";

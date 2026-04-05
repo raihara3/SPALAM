@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as THREE from "three";
 import { Feature } from "../types/Feature";
+import { CameraIntrinsics } from "../helpers/backProjectPoints";
 import { DeviceMotionTracker } from "./DeviceMotionTracker";
 
 /**
@@ -14,6 +16,7 @@ interface FeaturePair {
   id2: string;
   initialDistance: number;
   currentDistance: number;
+  baselineScale: number;
   trackedFrames: number;
 }
 
@@ -51,6 +54,8 @@ export interface DistanceTrackerOptions {
   velocityOutlierMadMultiplier?: number;
   /** Frames required for outlier feature to recover. Default: 5 */
   velocityOutlierRecoveryFrames?: number;
+  /** EMA smoothing alpha (0-1). Lower = smoother but more lag. Default: 0.5 */
+  smoothingAlpha?: number;
 }
 
 /**
@@ -87,6 +92,17 @@ export class DistanceTracker {
   private velocityOutlierRecoveryFrames: number;
   private featureVelocityStates: Map<string, FeatureVelocityState> = new Map();
 
+  private smoothingAlpha: number;
+  private smoothedScale: number = 1.0;
+
+  private cameraIntrinsics: CameraIntrinsics | null = null;
+  private rotationDelta: THREE.Quaternion | null = null;
+  private readonly inverseRotation: THREE.Quaternion = new THREE.Quaternion();
+  private readonly ray: THREE.Vector3 = new THREE.Vector3();
+  private readonly rotatedRay: THREE.Vector3 = new THREE.Vector3();
+  private readonly compensatedPoint1: { x: number; y: number } = { x: 0, y: 0 };
+  private readonly compensatedPoint2: { x: number; y: number } = { x: 0, y: 0 };
+
   constructor(options?: DistanceTrackerOptions) {
     this.minTrackedFrames = options?.minTrackedFrames ?? 10;
     this.maxPairs = options?.maxPairs ?? 20;
@@ -102,6 +118,7 @@ export class DistanceTracker {
       options?.velocityOutlierMadMultiplier ?? 3.0;
     this.velocityOutlierRecoveryFrames =
       options?.velocityOutlierRecoveryFrames ?? 5;
+    this.smoothingAlpha = options?.smoothingAlpha ?? 0.5;
   }
 
   /**
@@ -110,6 +127,21 @@ export class DistanceTracker {
   public setInitialDepth(depth: number): void {
     this.initialDepth = depth;
     this.currentDepth = depth;
+  }
+
+  /**
+   * Set camera intrinsics for rotation compensation
+   */
+  public setCameraIntrinsics(intrinsics: CameraIntrinsics): void {
+    this.cameraIntrinsics = intrinsics;
+  }
+
+  /**
+   * Set rotation delta from IMU for the current frame.
+   * The delta represents rotation from the previous frame to the current frame.
+   */
+  public setRotationDelta(quaternion: THREE.Quaternion): void {
+    this.rotationDelta = quaternion;
   }
 
   /**
@@ -165,12 +197,17 @@ export class DistanceTracker {
     if (rawScale !== null) {
       // Check if scale update should be skipped (stationary or rotating)
       if (this.shouldSkipScaleUpdate()) {
-        // Keep current scale, ignore feature-based changes
+        this.rotationDelta = null;
         return this.currentScale;
       }
 
+      // Apply EMA smoothing for temporal consistency
+      this.smoothedScale =
+        this.smoothingAlpha * rawScale +
+        (1 - this.smoothingAlpha) * this.smoothedScale;
+
       // Apply rate limiting to prevent sudden jumps
-      const scaleDiff = rawScale - this.currentScale;
+      const scaleDiff = this.smoothedScale - this.currentScale;
       const maxChange = this.currentScale * this.maxScaleChangePerFrame;
       const clampedDiff = Math.max(-maxChange, Math.min(maxChange, scaleDiff));
       this.currentScale = this.currentScale + clampedDiff;
@@ -179,26 +216,68 @@ export class DistanceTracker {
       this.currentDepth = this.initialDepth / this.currentScale;
     }
 
+    // Clear rotation delta after processing
+    this.rotationDelta = null;
+
     return this.currentScale;
   }
 
   /**
-   * Calculate distance between two features
+   * Compensate feature position for camera rotation using IMU data.
+   * Removes the rotational component so that only translational motion
+   * affects feature distances. Writes result into the provided output object.
+   */
+  private compensateRotation(
+    x: number,
+    y: number,
+    output: { x: number; y: number }
+  ): void {
+    if (!this.rotationDelta || !this.cameraIntrinsics) {
+      output.x = x;
+      output.y = y;
+      return;
+    }
+
+    const { fx, fy, cx, cy } = this.cameraIntrinsics;
+
+    // Unproject to normalized camera coordinates and create 3D ray
+    this.ray.set((x - cx) / fx, (y - cy) / fy, 1.0);
+
+    // Apply inverse rotation delta
+    this.inverseRotation.copy(this.rotationDelta).invert();
+    this.rotatedRay.copy(this.ray).applyQuaternion(this.inverseRotation);
+
+    // Guard against degenerate reprojection (ray pointing away from camera)
+    if (this.rotatedRay.z <= 0.1) {
+      output.x = x;
+      output.y = y;
+      return;
+    }
+
+    // Reproject to pixel coordinates
+    output.x = (this.rotatedRay.x / this.rotatedRay.z) * fx + cx;
+    output.y = (this.rotatedRay.y / this.rotatedRay.z) * fy + cy;
+  }
+
+  /**
+   * Calculate distance between two features with rotation compensation
    */
   private calculateDistance(feature1: Feature, feature2: Feature): number {
-    const dx = feature1.x - feature2.x;
-    const dy = feature1.y - feature2.y;
+    this.compensateRotation(feature1.x, feature1.y, this.compensatedPoint1);
+    this.compensateRotation(feature2.x, feature2.y, this.compensatedPoint2);
+    const dx = this.compensatedPoint1.x - this.compensatedPoint2.x;
+    const dy = this.compensatedPoint1.y - this.compensatedPoint2.y;
     return Math.sqrt(dx * dx + dy * dy);
   }
 
   /**
    * Check if scale update should be skipped using IMU data.
    *
-   * Scale updates should be skipped when:
-   * - Device is stationary (no movement, no rotation) - changes are noise
-   * - Device is rotating (even without translation) - perspective changes cause false scale detection
+   * Scale updates should be skipped only when the device is stationary
+   * (no movement and no rotation) — changes in this state are noise.
    *
-   * Scale updates should only occur when device is translating forward/backward without significant rotation.
+   * Rotation no longer triggers a skip because compensateRotation()
+   * removes the rotational component from feature positions.
    */
   private shouldSkipScaleUpdate(): boolean {
     if (!this.deviceMotionTracker || !this.deviceMotionTracker.isTracking()) {
@@ -215,16 +294,11 @@ export class DistanceTracker {
     const accelerationMagnitude = linearAcceleration.length();
     const angularMagnitude = angularVelocity.length();
 
-    // Skip if stationary (both acceleration and rotation are small)
-    const isStationary =
+    // Skip only if truly stationary (both acceleration and rotation are small)
+    return (
       accelerationMagnitude < this.stationaryAccelerationThreshold &&
-      angularMagnitude < this.stationaryAngularVelocityThreshold;
-
-    // Skip if rotating (rotation causes perspective changes, not real scale changes)
-    const isRotating =
-      angularMagnitude >= this.stationaryAngularVelocityThreshold;
-
-    return isStationary || isRotating;
+      angularMagnitude < this.stationaryAngularVelocityThreshold
+    );
   }
 
   /**
@@ -395,15 +469,12 @@ export class DistanceTracker {
           const distance = this.calculateDistance(feature1, feature2);
 
           if (distance >= this.minPairDistance) {
-            // Normalize initialDistance by current scale to prevent drift
-            // This ensures all pairs use scale=1.0 as their reference
-            const normalizedInitialDistance = distance / this.currentScale;
-
             this.featurePairs.set(pairId, {
               id1: feature1.id,
               id2: feature2.id,
-              initialDistance: normalizedInitialDistance,
+              initialDistance: distance,
               currentDistance: distance,
+              baselineScale: this.currentScale,
               trackedFrames: 1,
             });
           }
@@ -428,9 +499,9 @@ export class DistanceTracker {
       return null;
     }
 
-    // Calculate scale for each pair
+    // Calculate absolute scale for each pair using baseline snapshot
     const scaleValues = stablePairs.map((pair) => ({
-      scale: pair.currentDistance / pair.initialDistance,
+      scale: (pair.currentDistance / pair.initialDistance) * pair.baselineScale,
       weight: pair.trackedFrames,
     }));
 
@@ -446,7 +517,9 @@ export class DistanceTracker {
     const medianIndex = Math.floor(sortedScales.length / 2);
     const median =
       sortedScales.length % 2 === 0
-        ? (sortedScales[medianIndex - 1].scale + sortedScales[medianIndex].scale) / 2
+        ? (sortedScales[medianIndex - 1].scale +
+            sortedScales[medianIndex].scale) /
+          2
         : sortedScales[medianIndex].scale;
 
     // If few pairs, use median directly without outlier rejection
@@ -566,7 +639,9 @@ export class DistanceTracker {
     this.featurePairs.clear();
     this.featureVelocityStates.clear();
     this.currentScale = 1.0;
+    this.smoothedScale = 1.0;
     this.currentDepth = this.initialDepth;
+    this.rotationDelta = null;
   }
 
   /**
