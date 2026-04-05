@@ -51,6 +51,9 @@ import {
   DistanceTracker,
   FeatureAnchor,
   GravityAligner,
+  FeatureQualityMonitor,
+  FeatureQualityState,
+  PlaneModelPersistence,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 
@@ -377,6 +380,10 @@ export class SPALAM implements IServiceProvider {
   private featureAnchor: FeatureAnchor | null = null;
   /** 重力アライナー（Phase 2.5: 平面角度精度向上） */
   private gravityAligner: GravityAligner | null = null;
+  /** 特徴点品質モニター（特徴点が少ない平面でのドリフト軽減） */
+  private featureQualityMonitor: FeatureQualityMonitor | null = null;
+  /** 平面モデル永続化（DROUGHT時に平面位置をロック） */
+  private planeModelPersistence: PlaneModelPersistence | null = null;
   /** 初期平面スケール */
   private initialPlaneScale: number = 1.0;
   /** 再配置待ちフラグ（オブジェクトをcenterFeatureの位置に移動する必要がある） */
@@ -1022,7 +1029,10 @@ export class SPALAM implements IServiceProvider {
    * centerFeature（黄色い特徴点）の位置を使って平面のワールド座標を補正する。
    * カメラはIMUで回転するが、平面はcenterFeatureに正確に配置される。
    */
-  private updatePlaneWorldPosition(centerFeature: InternalFeature): void {
+  private updatePlaneWorldPosition(
+    centerFeature: InternalFeature,
+    lerpFactor: number = 0.5
+  ): void {
     const camera = this.arRenderer!.getCamera();
     const planeGroup = this.stateManager.getPlaneGroup();
     const planeResult = this.stateManager.getPlaneResult();
@@ -1051,8 +1061,8 @@ export class SPALAM implements IServiceProvider {
     // ワールド座標に変換（Three.jsの座標系: -Zがカメラの前方）
     const targetPosition = camera.localToWorld(new THREE.Vector3(x, y, -z));
 
-    // スムーズに追従
-    planeGroup.position.lerp(targetPosition, 0.5);
+    // スムーズに追従（lerpFactorで追従速度を制御）
+    planeGroup.position.lerp(targetPosition, lerpFactor);
   }
 
   /**
@@ -1173,20 +1183,59 @@ export class SPALAM implements IServiceProvider {
         this.updatePhase25Tracking(features);
       }
 
-      // 平面が検出済みで、特徴点が存在する場合
-      if (this.stateManager.isPlaneDetected() && features.length > 0 && centerFeature) {
-        // 再配置待ちフラグがセットされていて、centerFeatureが存在する場合は
-        // オブジェクトをcenterFeatureの位置に即座に配置
-        if (this.pendingReposition) {
+      // 特徴点品質モニターを更新
+      let qualityState = FeatureQualityState.RICH;
+      if (this.featureQualityMonitor && this.stateManager.isPlaneDetected()) {
+        const previousState = this.featureQualityMonitor.getState();
+        qualityState = this.featureQualityMonitor.update(features);
+
+        if (previousState !== qualityState) {
+          if (
+            qualityState === FeatureQualityState.DROUGHT &&
+            this.planeModelPersistence
+          ) {
+            const planeGroup = this.stateManager.getPlaneGroup();
+            if (planeGroup) {
+              planeGroup.getWorldPosition(this.reusablePlaneCenter);
+              this.planeModelPersistence.lockPosition(
+                this.reusablePlaneCenter
+              );
+            }
+          } else if (
+            previousState === FeatureQualityState.DROUGHT &&
+            this.planeModelPersistence
+          ) {
+            this.planeModelPersistence.startRecovery();
+          }
+        }
+      }
+
+      // 平面が検出済みの場合、品質状態に応じて位置更新を制御
+      if (this.stateManager.isPlaneDetected()) {
+        if (this.pendingReposition && centerFeature) {
           this.repositionToCenterFeature(centerFeature);
           this.pendingReposition = false;
-          // 再配置直後は位置更新をスキップ（上書きを防ぐ）
-        } else if (this.imuTrackingEnabled) {
-          // IMU有効時: centerFeatureの位置で平面のワールド位置を補正
-          this.updatePlaneWorldPosition(centerFeature);
-        } else {
-          // IMU無効時: centerFeatureの位置でカメラ位置を更新
-          this.updateCameraPosition(centerFeature);
+        } else if (qualityState === FeatureQualityState.DROUGHT) {
+          // DROUGHT: 特徴点ベースの更新をスキップし、平面位置をロック
+          if (this.planeModelPersistence) {
+            this.planeModelPersistence.updateDuringDrought();
+          }
+        } else if (features.length > 0 && centerFeature) {
+          if (this.imuTrackingEnabled) {
+            const baseLerpFactor =
+              this.planeModelPersistence?.getLerpFactor(qualityState) ?? 0.5;
+            let lerpFactor = baseLerpFactor;
+
+            if (this.planeModelPersistence?.isRecovering()) {
+              this.planeModelPersistence.updateRecovery();
+              lerpFactor *=
+                this.planeModelPersistence.getRecoveryBlendFactor();
+            }
+
+            this.updatePlaneWorldPosition(centerFeature, lerpFactor);
+          } else {
+            this.updateCameraPosition(centerFeature);
+          }
         }
       }
     }
@@ -1234,6 +1283,14 @@ export class SPALAM implements IServiceProvider {
     // Clear gravity aligner smoothing state
     if (this.gravityAligner) {
       this.gravityAligner.reset();
+    }
+
+    // Reset feature quality monitor and plane model persistence
+    if (this.featureQualityMonitor) {
+      this.featureQualityMonitor.reset();
+    }
+    if (this.planeModelPersistence) {
+      this.planeModelPersistence.reset();
     }
 
     // Request garbage collection hint (if available)
@@ -1358,7 +1415,17 @@ export class SPALAM implements IServiceProvider {
 
     // Phase 2: 相補フィルタで視覚情報と融合
     if (this.complementaryFilter && this.driftCorrector) {
-      const visualConfidence = this.driftCorrector.getVisualConfidence();
+      let visualConfidence = this.driftCorrector.getVisualConfidence();
+
+      // 特徴点品質状態に応じてIMU依存度を調整
+      if (this.featureQualityMonitor) {
+        const state = this.featureQualityMonitor.getState();
+        if (state === FeatureQualityState.DROUGHT) {
+          visualConfidence = 0;
+        } else if (state === FeatureQualityState.POOR) {
+          visualConfidence *= 0.3;
+        }
+      }
 
       // 相補フィルタで融合（視覚姿勢は現時点ではnull - 将来的に視覚からの姿勢推定を追加）
       const fusedOrientation = this.complementaryFilter.fuse(
@@ -1686,6 +1753,14 @@ export class SPALAM implements IServiceProvider {
       this.gravityAligner.dispose();
       this.gravityAligner = null;
     }
+    if (this.featureQualityMonitor) {
+      this.featureQualityMonitor.dispose();
+      this.featureQualityMonitor = null;
+    }
+    if (this.planeModelPersistence) {
+      this.planeModelPersistence.dispose();
+      this.planeModelPersistence = null;
+    }
 
     // ARレンダラーを解放
     if (this.arRenderer) {
@@ -2002,6 +2077,9 @@ export class SPALAM implements IServiceProvider {
       minTrackedFrames: 10,
       maxStableFeatures: 50,
     });
+
+    this.featureQualityMonitor = new FeatureQualityMonitor();
+    this.planeModelPersistence = new PlaneModelPersistence();
 
     this.deviceMotionTracker.addListener((event: DeviceMotionTrackerEvent) => {
       if (event.type === "stateChange") {
