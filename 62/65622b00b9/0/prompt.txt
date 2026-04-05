@@ -1,0 +1,82 @@
+トラッキングしている平面で陰が動くと、黄色い特徴点が陰の影響を受けて動いてしまい、その結果カメラを動かしていないのにオブジェクトだけ動いてしまいます。
+この問題を改善したい。特徴点のトラッキングが陰の影響を受けないように工夫するか、カメラがほぼうごていない時や全ての特徴点が同じように動いていない場合は特徴点を動かさないようにするなど。改善案を提案してほしいです
+
+---
+
+ではまずはAだけ実装してみてください
+
+---
+
+<task-notification>
+<task-id>a327bf1cd933cd87e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/0186175d-c708-45b5-b371-323466d58729/tasks/a327bf1cd933cd87e.output</output-file>
+<status>completed</status>
+<summary>Agent "Review motion coherence filter" completed</summary>
+<result>以下がレビュー結果です。
+
+---
+
+## Review: `applyMotionCoherenceFilter`
+
+### 1. Performance (Medium)
+
+**`prevFeatures.find()` inside a loop** (line 659): `trackedFeatures` と `prevFeatures` の両方に対して `find()` を使っているため、O(n*m) の線形探索になっています。フレームあたり数十~百程度の特徴点であれば実用上問題ありませんが、`prevFeatures` を事前に `Map&lt;id, Feature&gt;` に変換すれば O(n) に改善できます。
+
+**3回の `sort()` 呼び出し** (dx, dy, deviations): それぞれ O(n log n)。特徴点数が少ないため実測で問題になる可能性は低いですが、中央値の計算には `nth_element` 相当の O(n) アルゴリズム（quickselect）の方が理論的には効率的です。現実的には特徴点数 &lt; 200 なので **Low** の懸念です。
+
+**配列の一時割り当て**: `motions`, `sortedDx`, `sortedDy`, `deviations`, `sortedDeviations` と毎フレーム5つの配列を生成しています。GC プレッシャーを避けたい場合はプール化を検討できますが、現時点では許容範囲です。
+
+### 2. Correctness (Low)
+
+MAD の計算は統計的に正しいです。ただし、**MAD は通常各成分ごとに独立して計算する**のが一般的ですが、ここでは2D ユークリッド距離の MAD を使っています。これは問題なく動作しますが、方向ごとの異方的な外れ値（例: x方向だけ異常）の検出精度がやや下がります。閾値 2.0 は妥当な値です。
+
+### 3. Edge Cases (Medium)
+
+**全特徴点が同方向に動く場合（カメラ移動）**: MAD が非常に小さくなりますが、`effectiveMad = Math.max(mad, 0.3)` のフロア値で centerFeature の正当な動きまで reject される可能性があります。例えば、全特徴点が (10, 0) に動き、centerFeature だけ (10.7, 0) に動いた場合、deviation=0.7 &gt; 2.0*0.3=0.6 で reject されます。**フロア値 0.3 はやや小さい可能性があります**。カメラの高速パン時に誤 reject が起きうるため、0.5~1.0 への引き上げを検討すべきです。
+
+### 4. Mutation
+
+`trackedFeatures[index]` をスプレッド構文で新オブジェクトに置換しており、元の配列の参照を壊さない安全な方法です。問題ありません。</result>
+<usage><total_tokens>13868</total_tokens><tool_uses>2</tool_uses><duration_ms>28071</duration_ms></usage>
+</task-notification>
+
+---
+
+全然改善されません。差分を下に戻します。代わりにCの照明変動に強い前処理（補助的）を対応してください
+
+---
+
+まだまだ陰の影響を受けていますよ。全然改善が見られません
+
+---
+
+一度CLAHEは戻してから実装してください。その前にForward-Backwardでどうなるのかを詳しく教えて
+
+---
+
+お願いします
+
+---
+
+<task-notification>
+<task-id>a42d200849296313f</task-id>
+<tool-use-id>toolu_01Niy9MYyA2XADHNAxDJoewo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-aihara-10-dev-my-SPALAM/0186175d-c708-45b5-b371-323466d58729/tasks/a42d200849296313f.output</output-file>
+<status>completed</status>
+<summary>Agent "Review Forward-Backward check" completed</summary>
+<result>## レビュー結果
+
+**Performance**: 2回目の `calcOpticalFlowPyrLK` は1フレームあたりの計算量をほぼ倍増させます。ただしこれはFB checkの標準的コストであり、影の誤追跡除去という目的に対して妥当です。`Math.sqrt` は `fbError * fbError &gt; threshold * threshold` の比較に置き換えることで、ループ内のsqrt呼び出しを除去できます（軽微な最適化）。
+
+**メモリリーク**: Mat cleanup は正しいです。旧コードでは `err` を削除していた一方 `status` の削除漏れがありましたが、新コードでは7つのMat全て（`prevPoints`, `nextPoints`, `statusForward`, `errForward`, `backPoints`, `statusBackward`, `errBackward`）を `delete()` しています。ただし **`calcOpticalFlowPyrLK` が例外をスローした場合、それ以前に生成されたMatがリークします**（try-finallyで囲まれていない）。これは既存コードからの問題ですが、Matが増えた分リスクは拡大しています。
+
+**正確性**: FB errorの計算ロジック（ユークリッド距離）は正しいです。
+
+**エッジケース**: 大半のfeatureがrejectされた場合、既存のstep 7（`trackedFeatures.length &lt; maxCorners * 0.3` で再検出）がフォールバックとして機能するため、致命的な問題はありません。
+
+**推奨**:
+- `Math.sqrt` を二乗比較に置換（Low）
+- Mat生成からdelete間をtry-finallyで保護（Medium）</result>
+<usage><total_tokens>13961</total_tokens><tool_uses>2</tool_uses><duration_ms>21450</duration_ms></usage>
+</task-notification>
