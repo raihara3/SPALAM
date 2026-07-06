@@ -206,6 +206,21 @@ export interface ARRendererConfig {
 }
 
 /**
+ * カメラトラッキングの設定
+ */
+export interface CameraTrackingConfig {
+  /**
+   * メトリック6DoFカメラトラッキング（ランドマークマップ + RANSAC PnP）を
+   * 有効にするか。有効時は特徴点検出領域が全画面に切り替わる。
+   */
+  enableSixDof: boolean;
+  /** 初期化に必要な最小対応点数 */
+  minCorrespondences: number;
+  /** トラッキング継続に必要な最小対応点数（下回るとlost） */
+  minTrackedCorrespondences: number;
+}
+
+/**
  * SPALAM全体の設定
  */
 export interface SPALAMConfig {
@@ -217,4 +232,6 @@ export interface SPALAMConfig {
   plane: PlaneEstimationConfig;
   /** ARレンダリングの設定 */
   renderer: ARRendererConfig;
+  /** カメラトラッキングの設定 */
+  tracking: CameraTrackingConfig;
 }

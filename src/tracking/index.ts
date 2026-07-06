@@ -32,6 +32,7 @@ export { PlaneModelPersistence } from "./PlaneModelPersistence";
 export { TrackingStateMachine } from "./TrackingStateMachine";
 export { LandmarkMap } from "./LandmarkMap";
 export { MapInitializer } from "./MapInitializer";
+export { CameraTracker } from "./CameraTracker";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -73,3 +74,8 @@ export type {
   InitializationResult,
   InitializationFailureReason,
 } from "./MapInitializer";
+export type {
+  CameraTrackerOptions,
+  CameraTrackerResult,
+  CameraTrackerStatus,
+} from "./CameraTracker";

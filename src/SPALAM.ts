@@ -56,9 +56,16 @@ import {
   FeatureQualityState,
   PlaneModelPersistence,
   TrackingStateMachine,
+  CameraTracker,
+  CameraTrackerStatus,
+  LandmarkMap,
+  MapInitializer,
+  PoseEstimator,
+  Triangulator,
+  PnPSolver,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
-import type { TrackingState } from "./types/Pose";
+import type { TrackingState, CameraPose } from "./types/Pose";
 
 // config
 import { SPALAMConfig } from "./config/types";
@@ -67,6 +74,7 @@ import { getEnvConfig } from "./config/environment";
 
 // helpers
 import { getCameraIntrinsics } from "./helpers/backProjectPoints";
+import { cameraPoseToThreeJs } from "./helpers/cameraPoseConversion";
 
 /**
  * Fluent API用の設定ビルダー
@@ -397,6 +405,12 @@ export class SPALAM implements IServiceProvider {
   /** トラッキング状態機械 */
   private readonly trackingStateMachine: TrackingStateMachine =
     new TrackingStateMachine();
+  /** 6DoFカメラトラッカー（ランドマークマップ + RANSAC PnP） */
+  private cameraTracker: CameraTracker | null = null;
+  /** 6DoFトラッキングのOpenCV依存コンポーネント（dispose用） */
+  private sixDofComponents: Array<{ dispose(): void }> = [];
+  /** 初期化時の深度事前情報用の再利用Map */
+  private readonly reusableDepthPriors: Map<string, number> = new Map();
 
   /** Previous orientation for computing rotation delta for DistanceTracker */
   private readonly previousOrientationForScale: THREE.Quaternion =
@@ -507,12 +521,20 @@ export class SPALAM implements IServiceProvider {
           this.config.features.showFeatures,
           this.config.depth.showDepth,
           {
-            detectionRegion: this.config.features.detectionRegion,
+            // 6DoFトラッキングは環境全体のランドマークを必要とするため、
+            // 有効時は検出領域を全画面に切り替える
+            detectionRegion: this.config.tracking.enableSixDof
+              ? "full"
+              : this.config.features.detectionRegion,
             forwardBackwardThreshold:
               this.config.features.forwardBackwardThreshold,
             grid: this.config.features.grid,
           }
         );
+
+        if (this.config.tracking.enableSixDof) {
+          this.initializeCameraTracker();
+        }
 
         this.stateManager.setState(SPALAMState.DETECTING_FEATURES);
         this.render();
@@ -1196,6 +1218,23 @@ export class SPALAM implements IServiceProvider {
 
       this.stageProfiler.beginStage("tracking");
 
+      // 6DoFカメラトラッキング（有効時）: ランドマークマップに対する
+      // RANSAC PnPでカメラ姿勢を推定し、レンダリングカメラへ反映する。
+      // トラッキング成功時は視覚姿勢がIMU姿勢を上書きし、lost時はIMUが
+      // フォールバックとして働く
+      let cameraTrackerStatus: CameraTrackerStatus | null = null;
+      if (this.cameraTracker) {
+        const trackerResult = this.cameraTracker.update(
+          features,
+          currentTime,
+          this.buildSixDofDepthPriors(features)
+        );
+        cameraTrackerStatus = trackerResult.status;
+        if (trackerResult.status === "tracking" && trackerResult.pose) {
+          this.applySixDofPose(trackerResult.pose);
+        }
+      }
+
       // Phase 2: ドリフト補正器に特徴点情報を更新（IMU有効時も継続）
       if (this.driftCorrector && features.length > 0) {
         this.updateDriftCorrector(features);
@@ -1263,7 +1302,11 @@ export class SPALAM implements IServiceProvider {
       }
 
       this.stageProfiler.endStage("tracking");
-      this.updateTrackingStateMachine(centerFeature, qualityState);
+      this.updateTrackingStateMachine(
+        centerFeature,
+        qualityState,
+        cameraTrackerStatus
+      );
     }
 
     if (this.arRenderer) {
@@ -1276,32 +1319,52 @@ export class SPALAM implements IServiceProvider {
   /**
    * 毎フレームの観測に基づいてトラッキング状態機械を更新
    *
-   * 既存のシグナル（平面検出、特徴点喪失、特徴点品質）を明示的な
-   * トラッキング状態に写像する。復帰系の挙動は今後この状態を参照する。
+   * 既存のシグナル（平面検出、特徴点喪失、特徴点品質）と6DoFトラッカーの
+   * 状態を明示的なトラッキング状態に写像する。復帰系の挙動は今後この
+   * 状態を参照する。
    */
   private updateTrackingStateMachine(
     centerFeature: InternalFeature | null,
-    qualityState: FeatureQualityState
+    qualityState: FeatureQualityState,
+    cameraTrackerStatus: CameraTrackerStatus | null = null
   ): void {
     const machine = this.trackingStateMachine;
 
-    if (!this.stateManager.isPlaneDetected()) {
-      machine.transition("initializing", "waiting for plane detection");
+    if (cameraTrackerStatus === "initializing") {
+      machine.transition("initializing", "bootstrapping 6DoF landmark map");
       return;
     }
-
-    const featuresLost =
-      this.frameProcessor.hasLostFeatures() || !centerFeature;
-    if (featuresLost) {
+    if (cameraTrackerStatus === "lost") {
       if (this.pendingReposition) {
         machine.transition(
           "relocalizing",
           "redetection triggered by frustum check"
         );
       } else {
-        machine.transition("lost", "tracked features lost");
+        machine.transition("lost", "6DoF camera tracking lost");
       }
       return;
+    }
+
+    if (cameraTrackerStatus === null) {
+      if (!this.stateManager.isPlaneDetected()) {
+        machine.transition("initializing", "waiting for plane detection");
+        return;
+      }
+
+      const featuresLost =
+        this.frameProcessor.hasLostFeatures() || !centerFeature;
+      if (featuresLost) {
+        if (this.pendingReposition) {
+          machine.transition(
+            "relocalizing",
+            "redetection triggered by frustum check"
+          );
+        } else {
+          machine.transition("lost", "tracked features lost");
+        }
+        return;
+      }
     }
 
     if (qualityState === FeatureQualityState.DROUGHT) {
@@ -1311,6 +1374,85 @@ export class SPALAM implements IServiceProvider {
     } else {
       machine.transition("tracking", "stable features tracked");
     }
+  }
+
+  /**
+   * 6DoFカメラトラッカーを初期化
+   *
+   * PoseEstimator / Triangulator / PnPSolver をフル解像度の内部パラメータで
+   * 構築し、ランドマークマップとゲート付き初期化器に接続する。
+   */
+  private initializeCameraTracker(): void {
+    if (!this.video) return;
+
+    const intrinsics = getCameraIntrinsics(
+      this.config.plane.cameraIntrinsics,
+      this.video.videoWidth,
+      this.video.videoHeight
+    );
+
+    const poseEstimator = new PoseEstimator(cv, intrinsics);
+    const triangulator = new Triangulator(cv, intrinsics);
+    const pnpSolver = new PnPSolver(cv, intrinsics);
+    this.sixDofComponents = [poseEstimator, triangulator, pnpSolver];
+
+    const mapInitializer = new MapInitializer(
+      { poseEstimator, triangulator, intrinsics },
+      { minCorrespondences: this.config.tracking.minCorrespondences }
+    );
+
+    this.cameraTracker = new CameraTracker(
+      { mapInitializer, landmarkMap: new LandmarkMap(), pnpSolver },
+      {
+        minReferenceFeatures: this.config.tracking.minCorrespondences,
+        minTrackedCorrespondences:
+          this.config.tracking.minTrackedCorrespondences,
+      }
+    );
+
+    console.log("6DoF camera tracker initialized");
+  }
+
+  /**
+   * 6DoF姿勢をレンダリングカメラへ適用（OpenCV基底 → Three.js基底に変換）
+   */
+  private applySixDofPose(pose: CameraPose): void {
+    if (!this.arRenderer) return;
+
+    const camera = this.arRenderer.getCamera();
+    const { position, quaternion } = cameraPoseToThreeJs(pose);
+    camera.position.copy(position);
+    camera.quaternion.copy(quaternion);
+  }
+
+  /**
+   * 6DoF初期化用の深度事前情報を構築
+   *
+   * 現状は検出済み平面の深度（P0.z）を全特徴点の粗い事前情報として使う。
+   * 特徴点ごとのニューラル深度サンプリングへの置き換えはPhase 2で行う
+   * （IMPROVEMENT_PLAN.md 1-B参照）。
+   */
+  private buildSixDofDepthPriors(
+    features: InternalFeature[]
+  ): Map<string, number> | undefined {
+    if (!this.cameraTracker || this.cameraTracker.isInitialized()) {
+      return undefined;
+    }
+
+    const planeResult = this.stateManager.getPlaneResult();
+    if (!planeResult) {
+      return undefined;
+    }
+    const depth = Math.abs(planeResult.P0.z);
+    if (depth <= 0) {
+      return undefined;
+    }
+
+    this.reusableDepthPriors.clear();
+    for (const feature of features) {
+      this.reusableDepthPriors.set(feature.id, depth);
+    }
+    return this.reusableDepthPriors;
   }
 
   /**
@@ -1765,6 +1907,7 @@ export class SPALAM implements IServiceProvider {
     this.frameProcessor.reset();
     this.trackingStateMachine.reset();
     this.stageProfiler.reset();
+    this.cameraTracker?.reset();
     return this;
   }
 
@@ -1835,6 +1978,14 @@ export class SPALAM implements IServiceProvider {
     // トラッキング状態機械とプロファイラを解放
     this.trackingStateMachine.dispose();
     this.stageProfiler.reset();
+
+    // 6DoFカメラトラッカーとOpenCV依存コンポーネントを解放
+    if (this.cameraTracker) {
+      this.cameraTracker.dispose();
+      this.cameraTracker = null;
+    }
+    this.sixDofComponents.forEach((component) => component.dispose());
+    this.sixDofComponents = [];
 
     // ARレンダラーを解放
     if (this.arRenderer) {
@@ -1914,6 +2065,24 @@ export class SPALAM implements IServiceProvider {
    */
   public getTrackingState(): TrackingState {
     return this.trackingStateMachine.getState();
+  }
+
+  /**
+   * 6DoFカメラトラッキングの統計を取得
+   *
+   * 6DoFトラッキングが無効の場合はnullを返します。
+   */
+  public getSixDofTrackingStatistics(): {
+    isInitialized: boolean;
+    landmarks: ReturnType<LandmarkMap["getStatistics"]>;
+  } | null {
+    if (!this.cameraTracker) {
+      return null;
+    }
+    return {
+      isInitialized: this.cameraTracker.isInitialized(),
+      landmarks: this.cameraTracker.getLandmarkMap().getStatistics(),
+    };
   }
 
   /**

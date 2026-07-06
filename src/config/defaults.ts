@@ -129,6 +129,13 @@ export const defaultConfig: SPALAMConfig = {
       adaptiveQuality: true,
     },
   },
+  tracking: {
+    // Disabled by default until IMU fusion and anchor reconciliation are
+    // wired to the 6DoF pose (see IMPROVEMENT_PLAN.md Phase 2-3)
+    enableSixDof: false,
+    minCorrespondences: 50,
+    minTrackedCorrespondences: 15,
+  },
   plane: {
     ransacIterations: 100,
     ransacThreshold: 0.1,
@@ -299,6 +306,10 @@ export function mergeWithDefaults(
         ...defaultConfig.plane.weights,
         ...(config.plane?.weights || {}),
       },
+    },
+    tracking: {
+      ...defaultConfig.tracking,
+      ...(config.tracking || {}),
     },
     renderer: {
       ...defaultConfig.renderer,
