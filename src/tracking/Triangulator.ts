@@ -75,21 +75,32 @@ export class Triangulator {
   }
 
   /**
-   * Build projection matrix from camera pose
-   * P = K * [R | t]
+   * Build projection matrix from camera pose (camera-to-world convention)
+   *
+   * The pose holds the camera orientation R_wc and camera center C, so the
+   * projection extrinsics are R = R_wc^T and t = -R_wc^T * C, giving
+   * P = K * [R_wc^T | -R_wc^T * C].
    */
   private buildProjectionMatrix(pose: CameraPose): cv.Mat {
-    // Get rotation matrix elements
+    // THREE.Matrix3.elements is column-major: elements[0,3,6] is row 0.
+    // Rows of R_wc^T are the columns of R_wc.
     const R = pose.rotation.elements;
+    const C = pose.translation;
 
-    // Create [R | t] matrix (3x4)
+    const t = {
+      x: -(R[0] * C.x + R[1] * C.y + R[2] * C.z),
+      y: -(R[3] * C.x + R[4] * C.y + R[5] * C.z),
+      z: -(R[6] * C.x + R[7] * C.y + R[8] * C.z),
+    };
+
+    // Create [R_wc^T | t] matrix (3x4)
     const Rt = this.cv.matFromArray(3, 4, this.cv.CV_64FC1, [
-      R[0], R[3], R[6], pose.translation.x,
-      R[1], R[4], R[7], pose.translation.y,
-      R[2], R[5], R[8], pose.translation.z,
+      R[0], R[1], R[2], t.x,
+      R[3], R[4], R[5], t.y,
+      R[6], R[7], R[8], t.z,
     ]);
 
-    // Compute P = K * [R | t]
+    // Compute P = K * [R_wc^T | t]
     const P = new this.cv.Mat();
     this.cv.gemm(this.cameraMatrix!, Rt, 1, new this.cv.Mat(), 0, P);
 

@@ -30,6 +30,8 @@ export {
 } from "./FeatureQualityMonitor";
 export { PlaneModelPersistence } from "./PlaneModelPersistence";
 export { TrackingStateMachine } from "./TrackingStateMachine";
+export { LandmarkMap } from "./LandmarkMap";
+export { MapInitializer } from "./MapInitializer";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -64,3 +66,10 @@ export type {
   TrackingStateTransition,
   TrackingStateListener,
 } from "./TrackingStateMachine";
+export type { LandmarkMapOptions, Landmark } from "./LandmarkMap";
+export type {
+  MapInitializerOptions,
+  InitializationAttempt,
+  InitializationResult,
+  InitializationFailureReason,
+} from "./MapInitializer";
