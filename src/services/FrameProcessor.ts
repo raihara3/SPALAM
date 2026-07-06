@@ -3,9 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { FeatureDetector } from "../FeatureDetector";
+import {
+  FeatureDetector,
+  FeatureDetectionRegion,
+  FeatureGridOptions,
+} from "../FeatureDetector";
 import { DepthEstimation } from "../DepthEstimation";
 import { Feature } from "../types";
+
+/**
+ * 特徴点トラッキングのオプション（SPALAMConfig.featuresから抽出）
+ */
+export interface FeatureTrackingOptions {
+  /** 特徴点検出領域 */
+  detectionRegion?: FeatureDetectionRegion;
+  /** Forward-Backwardチェックの往復誤差しきい値 */
+  forwardBackwardThreshold?: number;
+  /** グリッドバケッティングの設定 */
+  grid?: FeatureGridOptions | null;
+}
 
 /**
  * フレーム処理結果
@@ -36,13 +52,15 @@ export class FrameProcessor {
     cvInstance: typeof cv,
     video: HTMLVideoElement,
     showFeatures: boolean = true,
-    showDepth: boolean = true
+    showDepth: boolean = true,
+    featureTrackingOptions?: FeatureTrackingOptions
   ): Promise<void> {
     // 特徴点検出器の初期化
     this.featureDetector = new FeatureDetector({
       cv: cvInstance,
       video,
       showFeatures,
+      ...featureTrackingOptions,
     });
 
     // 深度推定の初期化

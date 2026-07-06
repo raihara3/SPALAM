@@ -31,6 +31,13 @@ export const defaultConfig: SPALAMConfig = {
       width: 0.5,
       height: 0.5,
     },
+    detectionRegion: "center",
+    forwardBackwardThreshold: 1.0,
+    grid: {
+      rows: 6,
+      columns: 8,
+      maxFeaturesPerCell: 0,
+    },
     algorithms: [{ algorithm: FeatureDetectionAlgorithm.SHI_TOMASI }],
     algorithmParams: {
       harris: {
@@ -247,6 +254,10 @@ export function mergeWithDefaults(
       roi: {
         ...defaultConfig.features.roi,
         ...(config.features?.roi || {}),
+      },
+      grid: {
+        ...defaultConfig.features.grid,
+        ...(config.features?.grid || {}),
       },
       algorithms:
         config.features?.algorithms || defaultConfig.features.algorithms,

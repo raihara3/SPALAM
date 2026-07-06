@@ -60,6 +60,19 @@ export interface FeatureDetectorConfig {
     /** 高さ（画像高さに対する比率） */
     height: number;
   };
+  /** 特徴点検出領域（"center": 中央60%ROI、"full": 全画面） */
+  detectionRegion: "center" | "full";
+  /** Forward-Backwardチェックの往復誤差しきい値（処理解像度px、0以下で無効） */
+  forwardBackwardThreshold: number;
+  /** グリッドバケッティングの設定 */
+  grid: {
+    /** グリッド行数 */
+    rows: number;
+    /** グリッド列数 */
+    columns: number;
+    /** セルあたり最大特徴点数（0で自動: 均等割り当ての2倍） */
+    maxFeaturesPerCell: number;
+  };
   /** 使用する特徴点検出アルゴリズム */
   algorithms: AlgorithmConfig[];
   /** アルゴリズム固有のパラメータ設定 */

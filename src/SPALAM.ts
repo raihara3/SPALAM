@@ -505,7 +505,13 @@ export class SPALAM implements IServiceProvider {
           cv,
           this.video,
           this.config.features.showFeatures,
-          this.config.depth.showDepth
+          this.config.depth.showDepth,
+          {
+            detectionRegion: this.config.features.detectionRegion,
+            forwardBackwardThreshold:
+              this.config.features.forwardBackwardThreshold,
+            grid: this.config.features.grid,
+          }
         );
 
         this.stateManager.setState(SPALAMState.DETECTING_FEATURES);
