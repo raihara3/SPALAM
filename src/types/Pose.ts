@@ -212,6 +212,8 @@ export type TrackingState =
   | "uninitialized"
   | "initializing"
   | "tracking"
+  | "degraded"
+  | "frozen"
   | "lost"
   | "relocalizing";
 

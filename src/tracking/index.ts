@@ -29,6 +29,7 @@ export {
   FeatureQualityState,
 } from "./FeatureQualityMonitor";
 export { PlaneModelPersistence } from "./PlaneModelPersistence";
+export { TrackingStateMachine } from "./TrackingStateMachine";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -58,3 +59,8 @@ export type {
   PlaneModelPersistenceOptions,
   LockedPlaneModel,
 } from "./PlaneModelPersistence";
+export type {
+  TrackingStateMachineOptions,
+  TrackingStateTransition,
+  TrackingStateListener,
+} from "./TrackingStateMachine";

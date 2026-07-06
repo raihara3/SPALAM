@@ -41,6 +41,7 @@ import {
 // utils
 import { CameraController } from "./utils/CameraController";
 import { ServiceContainer } from "./utils/ServiceContainer";
+import { StageProfiler, FrameBudgetStatistics } from "./utils/StageProfiler";
 import { IServiceProvider } from "./types/ServiceProvider";
 
 // tracking
@@ -54,8 +55,10 @@ import {
   FeatureQualityMonitor,
   FeatureQualityState,
   PlaneModelPersistence,
+  TrackingStateMachine,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
+import type { TrackingState } from "./types/Pose";
 
 // config
 import { SPALAMConfig } from "./config/types";
@@ -389,6 +392,12 @@ export class SPALAM implements IServiceProvider {
   /** 再配置待ちフラグ（オブジェクトをcenterFeatureの位置に移動する必要がある） */
   private pendingReposition: boolean = false;
 
+  /** ステージ別プロファイラ（フレームバジェット監視） */
+  private readonly stageProfiler: StageProfiler = new StageProfiler();
+  /** トラッキング状態機械 */
+  private readonly trackingStateMachine: TrackingStateMachine =
+    new TrackingStateMachine();
+
   /** Previous orientation for computing rotation delta for DistanceTracker */
   private readonly previousOrientationForScale: THREE.Quaternion =
     new THREE.Quaternion();
@@ -680,6 +689,7 @@ export class SPALAM implements IServiceProvider {
       }
 
       // 平面フィッティングを実行
+      this.stageProfiler.beginStage("planeFitting");
       await this.planeFittingService.performFitting(
         frameResult.features,
         frameResult.depthMap,
@@ -689,6 +699,7 @@ export class SPALAM implements IServiceProvider {
         this.video?.videoWidth,
         this.video?.videoHeight
       );
+      this.stageProfiler.endStage("planeFitting");
 
       // フィッティングが完了したかチェック
       if (this.planeFittingService.isComplete()) {
@@ -1135,9 +1146,11 @@ export class SPALAM implements IServiceProvider {
       this.lastMemoryResetTime = currentTime;
     }
 
+    this.stageProfiler.beginFrame();
+
     // IMUトラッキングが有効な場合、カメラの姿勢を更新
     if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
-      this.updateCameraFromIMU();
+      this.stageProfiler.measure("imu", () => this.updateCameraFromIMU());
     }
 
     // centerFeatureがnull、または全特徴点が失われている場合、Frustum判定で再検出をトリガー
@@ -1150,7 +1163,9 @@ export class SPALAM implements IServiceProvider {
 
     // 常に特徴点検出は実行（カメラ映像の更新のため）
     if (this.frameProcessor.isReady()) {
-      this.frameProcessor.renderFeatures();
+      this.stageProfiler.measure("featureDetection", () =>
+        this.frameProcessor.renderFeatures()
+      );
 
       // フレーム処理イベントを発火
       const features = this.frameProcessor.getFeatures() || [];
@@ -1172,6 +1187,8 @@ export class SPALAM implements IServiceProvider {
         timestamp: Date.now(),
       };
       this.emit("frame:processed", frameData);
+
+      this.stageProfiler.beginStage("tracking");
 
       // Phase 2: ドリフト補正器に特徴点情報を更新（IMU有効時も継続）
       if (this.driftCorrector && features.length > 0) {
@@ -1238,10 +1255,55 @@ export class SPALAM implements IServiceProvider {
           }
         }
       }
+
+      this.stageProfiler.endStage("tracking");
+      this.updateTrackingStateMachine(centerFeature, qualityState);
     }
 
     if (this.arRenderer) {
-      this.arRenderer.render();
+      this.stageProfiler.measure("render", () => this.arRenderer!.render());
+    }
+
+    this.stageProfiler.endFrame();
+  }
+
+  /**
+   * 毎フレームの観測に基づいてトラッキング状態機械を更新
+   *
+   * 既存のシグナル（平面検出、特徴点喪失、特徴点品質）を明示的な
+   * トラッキング状態に写像する。復帰系の挙動は今後この状態を参照する。
+   */
+  private updateTrackingStateMachine(
+    centerFeature: InternalFeature | null,
+    qualityState: FeatureQualityState
+  ): void {
+    const machine = this.trackingStateMachine;
+
+    if (!this.stateManager.isPlaneDetected()) {
+      machine.transition("initializing", "waiting for plane detection");
+      return;
+    }
+
+    const featuresLost =
+      this.frameProcessor.hasLostFeatures() || !centerFeature;
+    if (featuresLost) {
+      if (this.pendingReposition) {
+        machine.transition(
+          "relocalizing",
+          "redetection triggered by frustum check"
+        );
+      } else {
+        machine.transition("lost", "tracked features lost");
+      }
+      return;
+    }
+
+    if (qualityState === FeatureQualityState.DROUGHT) {
+      machine.transition("frozen", "feature drought: plane position locked");
+    } else if (qualityState === FeatureQualityState.POOR) {
+      machine.transition("degraded", "low stable feature count");
+    } else {
+      machine.transition("tracking", "stable features tracked");
     }
   }
 
@@ -1695,6 +1757,8 @@ export class SPALAM implements IServiceProvider {
     this.stateManager.reset();
     this.planeFittingService.reset();
     this.frameProcessor.reset();
+    this.trackingStateMachine.reset();
+    this.stageProfiler.reset();
     return this;
   }
 
@@ -1762,6 +1826,10 @@ export class SPALAM implements IServiceProvider {
       this.planeModelPersistence = null;
     }
 
+    // トラッキング状態機械とプロファイラを解放
+    this.trackingStateMachine.dispose();
+    this.stageProfiler.reset();
+
     // ARレンダラーを解放
     if (this.arRenderer) {
       this.arRenderer.dispose();
@@ -1806,14 +1874,40 @@ export class SPALAM implements IServiceProvider {
    * ```
    */
   public getPerformanceStats(): PerformanceStats {
-    // TODO: 実際のパフォーマンスメトリクスを収集
+    const statistics = this.stageProfiler.getStatistics();
+    const memory = (
+      performance as Performance & { memory?: { usedJSHeapSize: number } }
+    ).memory;
+
     return {
-      fps: 0,
-      featureDetectionTime: 0,
-      depthEstimationTime: 0,
-      planeFittingTime: 0,
-      memoryUsage: 0,
+      fps: statistics.fps,
+      featureDetectionTime:
+        statistics.stages["featureDetection"]?.averageMs ?? 0,
+      depthEstimationTime: statistics.stages["depthEstimation"]?.averageMs ?? 0,
+      planeFittingTime: statistics.stages["planeFitting"]?.averageMs ?? 0,
+      memoryUsage: memory ? memory.usedJSHeapSize / (1024 * 1024) : 0,
     };
+  }
+
+  /**
+   * ステージ別のフレームバジェット統計を取得
+   *
+   * 各処理ステージ（imu / featureDetection / tracking / render / planeFitting）の
+   * 移動平均・最大値と、フレームバジェット超過率を返します。
+   */
+  public getFrameBudgetStatistics(): FrameBudgetStatistics {
+    return this.stageProfiler.getStatistics();
+  }
+
+  /**
+   * 現在のトラッキング状態を取得
+   *
+   * 平面検出前は "initializing"、通常追跡中は "tracking"、
+   * 特徴点品質低下時は "degraded"、特徴点枯渇時は "frozen"、
+   * 特徴点喪失時は "lost"、再検出中は "relocalizing" を返します。
+   */
+  public getTrackingState(): TrackingState {
+    return this.trackingStateMachine.getState();
   }
 
   /**
