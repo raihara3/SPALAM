@@ -73,6 +73,8 @@ export class FeatureDetector {
   private pooledMask: cv.Mat | null = null;
   private pooledGray: cv.Mat | null = null;
   private pooledSrc: cv.Mat | null = null;
+  // ORB extractor for relocalization descriptors (lazily created)
+  private orbExtractor: cv.Feature2D | null = null;
   private lastPooledWidth: number = 0;
   private lastPooledHeight: number = 0;
 
@@ -546,6 +548,10 @@ export class FeatureDetector {
       this.pooledSrc.delete();
       this.pooledSrc = null;
     }
+    if (this.orbExtractor) {
+      this.orbExtractor.delete();
+      this.orbExtractor = null;
+    }
     this.lastPooledWidth = 0;
     this.lastPooledHeight = 0;
   }
@@ -735,6 +741,75 @@ export class FeatureDetector {
       feature.y > h * 0.1 &&
       feature.y < h * 0.9
     );
+  }
+
+  /**
+   * 指定した特徴点位置のORB記述子を現在の内部画像上で計算する
+   *
+   * relocalization用。記述子は勾配強度画像（オプティカルフローと同じ表現）
+   * 上で計算されるため、保存側と照合側で一貫していれば有効に機能する。
+   * 画像端に近いキーポイントはORBにより間引かれるため、返るidsは
+   * 記述子Matの行と正確に整列した部分集合になる。
+   *
+   * @param features 特徴点（元解像度座標）
+   * @returns 記述子Mat（呼び出し側がdeleteする）と行対応の特徴点IDリスト。
+   *          計算できない場合はnull
+   */
+  public computeDescriptorsForFeatures(
+    features: Feature[]
+  ): { descriptors: cv.Mat; ids: string[] } | null {
+    if (!this.prevGray || features.length === 0) {
+      return null;
+    }
+    if (!this.orbExtractor) {
+      this.orbExtractor = new this.cv.ORB();
+    }
+
+    const keypoints = new this.cv.KeyPointVector();
+    const featureIdByPosition = new Map<string, string>();
+    const positionKey = (x: number, y: number) =>
+      `${Math.round(x * 10)},${Math.round(y * 10)}`;
+
+    try {
+      for (const feature of features) {
+        const x = feature.x * this.resolutionScale;
+        const y = feature.y * this.resolutionScale;
+        keypoints.push_back({
+          pt: { x, y },
+          size: 31,
+          angle: -1,
+          response: 0,
+          octave: 0,
+          class_id: -1,
+        });
+        featureIdByPosition.set(positionKey(x, y), feature.id);
+      }
+
+      const descriptors = new this.cv.Mat();
+      this.orbExtractor.compute(this.prevGray, keypoints, descriptors);
+
+      const ids: string[] = [];
+      let aligned = true;
+      for (let i = 0; i < keypoints.size(); i++) {
+        const keypoint = keypoints.get(i);
+        const id = featureIdByPosition.get(
+          positionKey(keypoint.pt.x, keypoint.pt.y)
+        );
+        if (!id) {
+          aligned = false;
+          break;
+        }
+        ids.push(id);
+      }
+
+      if (!aligned || descriptors.rows !== ids.length || ids.length === 0) {
+        descriptors.delete();
+        return null;
+      }
+      return { descriptors, ids };
+    } finally {
+      keypoints.delete();
+    }
   }
 
   public getTrackedFeaturePoints(): Feature[] {

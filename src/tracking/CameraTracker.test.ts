@@ -547,6 +547,103 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("relocalization", () => {
+    const createTrackerWithRelocalization = () => {
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const storedPoints3D = Array.from(
+        { length: 20 },
+        (_, i) => new THREE.Vector3(i * 0.1, 0, 3)
+      );
+      const relocalizationDatabase = {
+        addKeyframe: vi.fn(() => true),
+        size: vi.fn(() => 1),
+        relocalize: vi.fn(() => ({
+          pose: { ...identityPose, timestamp: 900, confidence: 0.9 },
+          keyframe: { points3D: storedPoints3D } as never,
+          inlierMatches: Array.from({ length: 20 }, (_, i) => ({
+            queryIndex: i,
+            trainIndex: i,
+            distance: 10,
+          })),
+        })),
+      };
+      const descriptorProvider = vi.fn((features: Feature[]) => ({
+        descriptors: { rows: features.length, delete: vi.fn() } as never,
+        ids: features.map((feature) => feature.id),
+      }));
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          relocalizationDatabase: relocalizationDatabase as never,
+          descriptorProvider,
+        },
+        { maxLostFramesBeforeReset: 2, relocalizationInterval: 5 }
+      );
+      return {
+        tracker,
+        landmarkMap,
+        relocalizationDatabase,
+        descriptorProvider,
+      };
+    };
+
+    it("should store anchor keyframes when keyframes are set", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes -> keyframe
+
+      expect(relocalizationDatabase.addKeyframe).toHaveBeenCalledOnce();
+    });
+
+    it("should recover the original world after a reset", () => {
+      const { tracker, landmarkMap, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+      // Two lost frames trigger a reset (maxLostFramesBeforeReset: 2)
+      tracker.update(createFeatures(5), 200);
+      tracker.update(createFeatures(5), 300);
+      expect(tracker.isInitialized()).toBe(false);
+
+      // reset() schedules an immediate relocalization attempt
+      const result = tracker.update(createFeatures(60), 400);
+
+      expect(relocalizationDatabase.relocalize).toHaveBeenCalledOnce();
+      expect(result.status).toBe("tracking");
+      expect(result.worldRestored).toBe(true);
+      expect(tracker.isInitialized()).toBe(true);
+      // Map re-seeded from the stored landmark positions
+      expect(result.newLandmarkCount).toBe(20);
+      expect(landmarkMap.getLandmark("feature_0")!.position.z).toBe(3);
+    });
+
+    it("should throttle relocalization attempts", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+      relocalizationDatabase.relocalize.mockReturnValue(null as never);
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+      tracker.update(createFeatures(5), 200);
+      tracker.update(createFeatures(5), 300); // reset -> immediate attempt scheduled
+
+      tracker.update(createFeatures(60), 400); // attempt 1 (immediate)
+      tracker.update(createFeatures(60), 433); // within interval: no attempt
+      tracker.update(createFeatures(60), 466);
+
+      expect(relocalizationDatabase.relocalize).toHaveBeenCalledOnce();
+    });
+  });
+
   describe("reset", () => {
     it("should clear the map and reference frame", () => {
       const { tracker, landmarkMap, mapInitializer } = createTracker({});

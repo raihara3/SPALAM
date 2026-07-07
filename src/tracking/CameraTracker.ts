@@ -3,12 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { Vector3 } from "three";
 import type { Feature } from "../types/Feature";
 import type { CameraPose } from "../types/Pose";
 import type { PnPSolver } from "./PnPSolver";
 import type { Triangulator } from "./Triangulator";
 import type { LocalBundleAdjustment } from "./LocalBundleAdjustment";
 import type { MotionModel } from "./MotionModel";
+import type { RelocalizationDatabase } from "./RelocalizationDatabase";
+
+/**
+ * Provider of ORB descriptors for the given features. Returns a descriptor
+ * Mat (ownership passes to the caller of the provider) with row-aligned
+ * feature IDs, or null when descriptors cannot be computed.
+ */
+export type DescriptorProvider = (
+  features: Feature[]
+) => { descriptors: cv.Mat; ids: string[] } | null;
 import type {
   MapInitializer,
   InitializationFailureReason,
@@ -52,6 +63,11 @@ export interface CameraTrackerResult {
   inlierCount: number;
   /** Landmarks added by replenishment this frame */
   newLandmarkCount: number;
+  /**
+   * True when tracking was regained by relocalizing into the existing
+   * world (the world frame did NOT change, unlike a fresh initialization)
+   */
+  worldRestored?: boolean;
   /** Failure reason of the initialization attempt, when initializing */
   initializationFailureReason?: InitializationFailureReason;
 }
@@ -89,6 +105,10 @@ export interface CameraTrackerOptions {
    * ratio alone is not a sufficient confidence signal. Default: 8
    */
   reprojectionErrorNormalization?: number;
+  /** Frames between relocalization attempts while uninitialized. Default: 15 */
+  relocalizationInterval?: number;
+  /** Minimum mapped features required to store an anchor keyframe. Default: 20 */
+  minKeyframeFeaturesForRelocalization?: number;
   /**
    * Maximum landmark position correction applied per bundle adjustment
    * run (world units). Bounded corrections keep the map visually stable;
@@ -135,6 +155,11 @@ export class CameraTracker {
     MotionModel,
     "update" | "predictPose" | "reset"
   > | null;
+  private readonly relocalizationDatabase: Pick<
+    RelocalizationDatabase,
+    "addKeyframe" | "relocalize" | "size"
+  > | null;
+  private readonly descriptorProvider: DescriptorProvider | null;
 
   private readonly minReferenceFeatures: number;
   private readonly minTrackedCorrespondences: number;
@@ -145,7 +170,10 @@ export class CameraTracker {
   private readonly bundleAdjustmentInterval: number;
   private readonly maxLandmarkCorrection: number;
   private readonly reprojectionErrorNormalization: number;
+  private readonly relocalizationInterval: number;
+  private readonly minKeyframeFeaturesForRelocalization: number;
   private keyframesSinceOptimization: number = 0;
+  private framesSinceRelocalizationAttempt: number = 0;
 
   private initialized: boolean = false;
   private lastPose: CameraPose | null = null;
@@ -166,6 +194,12 @@ export class CameraTracker {
       bundleAdjustment?: BundleAdjustmentBackend;
       /** Optional; short-gap pose bridging is disabled without it */
       motionModel?: Pick<MotionModel, "update" | "predictPose" | "reset">;
+      /** Optional; relocalization is disabled without both of these */
+      relocalizationDatabase?: Pick<
+        RelocalizationDatabase,
+        "addKeyframe" | "relocalize" | "size"
+      >;
+      descriptorProvider?: DescriptorProvider;
     },
     options?: CameraTrackerOptions
   ) {
@@ -175,6 +209,8 @@ export class CameraTracker {
     this.triangulator = dependencies.triangulator ?? null;
     this.bundleAdjustment = dependencies.bundleAdjustment ?? null;
     this.motionModel = dependencies.motionModel ?? null;
+    this.relocalizationDatabase = dependencies.relocalizationDatabase ?? null;
+    this.descriptorProvider = dependencies.descriptorProvider ?? null;
 
     this.minReferenceFeatures = options?.minReferenceFeatures ?? 50;
     this.minTrackedCorrespondences = options?.minTrackedCorrespondences ?? 15;
@@ -187,6 +223,9 @@ export class CameraTracker {
     this.maxLandmarkCorrection = options?.maxLandmarkCorrection ?? 0.1;
     this.reprojectionErrorNormalization =
       options?.reprojectionErrorNormalization ?? 8;
+    this.relocalizationInterval = options?.relocalizationInterval ?? 15;
+    this.minKeyframeFeaturesForRelocalization =
+      options?.minKeyframeFeaturesForRelocalization ?? 20;
   }
 
   /**
@@ -252,6 +291,10 @@ export class CameraTracker {
     this.mapInitializer.reset();
     this.bundleAdjustment?.reset();
     this.motionModel?.reset();
+    // The relocalization database intentionally survives resets — it is
+    // what allows recovering the original world. Schedule an immediate
+    // relocalization attempt on the next frame.
+    this.framesSinceRelocalizationAttempt = this.relocalizationInterval;
   }
 
   /**
@@ -266,6 +309,12 @@ export class CameraTracker {
     timestamp: number,
     depthPriorSupplier?: () => Map<string, number> | undefined
   ): CameraTrackerResult {
+    // Prefer recovering the previous world over building a new one
+    const relocalized = this.attemptRelocalization(features, timestamp);
+    if (relocalized) {
+      return relocalized;
+    }
+
     if (!this.mapInitializer.hasReferenceFrame()) {
       if (features.length >= this.minReferenceFeatures) {
         this.setReferenceFrame(features, timestamp, depthPriorSupplier?.());
@@ -505,6 +554,90 @@ export class CameraTracker {
     return added;
   }
 
+  /**
+   * Attempt to recover the previous world via the relocalization database
+   *
+   * Runs at a throttled interval while uninitialized. On a verified match
+   * (RANSAC PnP against a stored anchor keyframe), the landmark map is
+   * re-seeded from the keyframe's landmark positions keyed by the current
+   * feature IDs, and tracking resumes in the ORIGINAL world frame — so
+   * world-fixed content returns to its pre-loss position.
+   */
+  private attemptRelocalization(
+    features: Feature[],
+    timestamp: number
+  ): CameraTrackerResult | null {
+    if (
+      !this.relocalizationDatabase ||
+      this.relocalizationDatabase.size() === 0 ||
+      !this.descriptorProvider
+    ) {
+      return null;
+    }
+
+    this.framesSinceRelocalizationAttempt++;
+    if (this.framesSinceRelocalizationAttempt < this.relocalizationInterval) {
+      return null;
+    }
+    this.framesSinceRelocalizationAttempt = 0;
+
+    const computed = this.descriptorProvider(features);
+    if (!computed) {
+      return null;
+    }
+
+    try {
+      const featureById = new Map(
+        features.map((feature) => [feature.id, feature])
+      );
+      const queryPoints2D = computed.ids.map((id) => {
+        const feature = featureById.get(id)!;
+        return { x: feature.x, y: feature.y };
+      });
+
+      const result = this.relocalizationDatabase.relocalize(
+        computed.descriptors,
+        queryPoints2D,
+        timestamp
+      );
+      if (!result) {
+        return null;
+      }
+
+      // Re-seed the map: each inlier match links a current feature ID to a
+      // stored landmark position in the recovered world
+      this.landmarkMap.clear();
+      let seeded = 0;
+      for (const match of result.inlierMatches) {
+        const featureId = computed.ids[match.queryIndex];
+        const position = result.keyframe.points3D[match.trainIndex];
+        if (this.landmarkMap.addLandmark(featureId, position)) {
+          seeded++;
+        }
+      }
+      if (seeded < this.minTrackedCorrespondences) {
+        this.landmarkMap.clear();
+        return null;
+      }
+
+      this.initialized = true;
+      this.lastPose = result.pose;
+      this.consecutiveLostFrames = 0;
+      this.setKeyframe(result.pose, features);
+
+      return {
+        status: "tracking",
+        pose: result.pose,
+        correspondenceCount: result.inlierMatches.length,
+        inlierCount: result.inlierMatches.length,
+        newLandmarkCount: seeded,
+        worldRestored: true,
+      };
+    } finally {
+      computed.descriptors.delete();
+    }
+  }
+
   private setReferenceFrame(
     features: Feature[],
     timestamp: number,
@@ -525,6 +658,63 @@ export class CameraTracker {
     this.framesSinceKeyframe = 0;
 
     this.registerKeyframeWithBundleAdjustment(pose, features);
+    this.storeRelocalizationKeyframe(pose, features);
+  }
+
+  /**
+   * Store an anchor keyframe (descriptors + landmark positions) in the
+   * relocalization database. Unlike the BA sliding window, these entries
+   * survive tracker resets and enable recovery of the original world.
+   */
+  private storeRelocalizationKeyframe(
+    pose: CameraPose,
+    features: Feature[]
+  ): void {
+    if (!this.relocalizationDatabase || !this.descriptorProvider) {
+      return;
+    }
+
+    const mappedFeatures = features.filter((feature) =>
+      this.landmarkMap.getLandmark(feature.id)
+    );
+    if (mappedFeatures.length < this.minKeyframeFeaturesForRelocalization) {
+      return;
+    }
+
+    const computed = this.descriptorProvider(mappedFeatures);
+    if (!computed) {
+      return;
+    }
+
+    const featureById = new Map(
+      mappedFeatures.map((feature) => [feature.id, feature])
+    );
+    const points2D: Array<{ x: number; y: number }> = [];
+    const points3D: Vector3[] = [];
+    for (const id of computed.ids) {
+      const feature = featureById.get(id);
+      const landmark = this.landmarkMap.getLandmark(id);
+      if (!feature || !landmark) {
+        computed.descriptors.delete();
+        return;
+      }
+      points2D.push({ x: feature.x, y: feature.y });
+      points3D.push(landmark.position.clone());
+    }
+
+    // Descriptor Mat ownership transfers to the database
+    this.relocalizationDatabase.addKeyframe(
+      {
+        rotation: pose.rotation.clone(),
+        translation: pose.translation.clone(),
+        quaternion: pose.quaternion.clone(),
+        timestamp: pose.timestamp,
+        confidence: pose.confidence,
+      },
+      computed.descriptors,
+      points2D,
+      points3D
+    );
   }
 
   /**

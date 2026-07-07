@@ -65,6 +65,8 @@ import {
   PnPSolver,
   LocalBundleAdjustment,
   MotionModel,
+  DescriptorMatcher,
+  RelocalizationDatabase,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -1278,6 +1280,11 @@ export class SPALAM implements IServiceProvider {
               trackerResult.status === "degraded") &&
             trackerResult.pose
           ) {
+            if (trackerResult.worldRestored) {
+              // relocalizationで元のワールドへ復帰した場合、オブジェクトは
+              // 既に正しいワールド位置にあるため再アンカーしない
+              this.sixDofWorldAligned = true;
+            }
             this.applySixDofPose(trackerResult.pose);
           }
         } catch (error) {
@@ -1472,11 +1479,18 @@ export class SPALAM implements IServiceProvider {
       windowSize: 5,
       maxIterations: 3,
     });
+    const descriptorMatcher = new DescriptorMatcher(cv);
+    const relocalizationDatabase = new RelocalizationDatabase({
+      matcher: descriptorMatcher,
+      pnpSolver,
+    });
     this.sixDofComponents = [
       poseEstimator,
       triangulator,
       pnpSolver,
       bundleAdjustment,
+      descriptorMatcher,
+      relocalizationDatabase,
     ];
 
     const mapInitializer = new MapInitializer(
@@ -1492,6 +1506,9 @@ export class SPALAM implements IServiceProvider {
         triangulator,
         bundleAdjustment,
         motionModel: new MotionModel(),
+        relocalizationDatabase,
+        descriptorProvider: (features) =>
+          this.frameProcessor.computeDescriptorsForFeatures(features),
       },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,

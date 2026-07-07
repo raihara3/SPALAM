@@ -232,6 +232,15 @@ export class FrameProcessor {
   }
 
   /**
+   * 指定した特徴点位置のORB記述子を計算（relocalization用）
+   */
+  public computeDescriptorsForFeatures(
+    features: Feature[]
+  ): { descriptors: cv.Mat; ids: string[] } | null {
+    return this.featureDetector?.computeDescriptorsForFeatures(features) ?? null;
+  }
+
+  /**
    * 特徴点が失われているかどうかを返す
    */
   public hasLostFeatures(): boolean {

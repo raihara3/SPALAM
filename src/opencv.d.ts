@@ -141,8 +141,20 @@ declare namespace cv {
     class_id: number;
   }
 
+  /**
+   * Plain-object form of KeyPoint accepted by embind value conversion
+   */
+  interface KeyPointLike {
+    pt: { x: number; y: number };
+    size: number;
+    angle: number;
+    response: number;
+    octave: number;
+    class_id: number;
+  }
+
   interface KeyPointVector {
-    push_back(keypoint: KeyPoint): void;
+    push_back(keypoint: KeyPoint | KeyPointLike): void;
     get(index: number): KeyPoint;
     size(): number;
     delete(): void;
@@ -306,7 +318,23 @@ declare namespace cv {
       keypoints: KeyPointVector,
       descriptors: Mat
     ): void;
+    /** Compute descriptors at the provided keypoints (border keypoints are dropped in place) */
+    compute(image: Mat, keypoints: KeyPointVector, descriptors: Mat): void;
   }
+
+  const ORB: {
+    new (
+      nfeatures?: number,
+      scaleFactor?: number,
+      nlevels?: number,
+      edgeThreshold?: number,
+      firstLevel?: number,
+      WTA_K?: number,
+      scoreType?: number,
+      patchSize?: number,
+      fastThreshold?: number
+    ): Feature2D;
+  };
 
   // Constructors exposed as values
   const Mat: MatConstructor;
