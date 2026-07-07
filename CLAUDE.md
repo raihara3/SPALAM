@@ -75,11 +75,13 @@ The codebase uses a service-oriented architecture with dependency injection thro
 - Convex hull computation for plane boundaries
 - Weighted plane fitting for improved accuracy
 
-### 6DoF Camera Tracking (Phase 1, opt-in)
+### 6DoF Camera Tracking (Phases 1-2, opt-in)
 - Enabled via `tracking.enableSixDof` config (default: false); switches feature detection to full-frame
 - Landmark map + RANSAC PnP pipeline in `src/tracking/`: `TrackingStateMachine`, `LandmarkMap`, `MapInitializer`, `CameraTracker`
 - `CameraPose` uses the camera-to-world convention
 - Feature detection uses grid bucketing and a forward-backward LK check (config: `features.detectionRegion`, `features.forwardBackwardThreshold`, `features.grid`)
+- Keyframe-based landmark replenishment with throttled local bundle adjustment (`LocalBundleAdjustment` wired into `CameraTracker`)
+- Per-feature neural depth priors seed metric scale during map initialization; when IMU tracking is active, visual and IMU orientations are fused via slerp weighted by PnP pose confidence
 - Per-stage frame profiling via `StageProfiler` (`src/utils/`); `getPerformanceStats()` returns real measurements
 - Public APIs: `getTrackingState()`, `getFrameBudgetStatistics()`, `getSixDofTrackingStatistics()`
 
@@ -93,7 +95,8 @@ The codebase uses a service-oriented architecture with dependency injection thro
 
 The project is undergoing a 6DoF tracking overhaul (see `IMPROVEMENT_PLAN.md`):
 - Phase 1 (done): tracking state machine, landmark map, gated map initialization, RANSAC PnP camera tracking (opt-in)
-- Phase 2-3 (planned): IMU fusion and anchor reconciliation with the 6DoF pose
+- Phase 2 (done): keyframe-based landmark replenishment, throttled local bundle adjustment, depth-prior scale initialization, confidence-weighted visual-IMU orientation fusion
+- Phase 3 (planned): persistence — long-lived keyframes, validated relocalization, and anchor reconciliation with the 6DoF pose
 - Mobile performance optimizations
 
 ## Testing

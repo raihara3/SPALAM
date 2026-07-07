@@ -63,6 +63,7 @@ import {
   PoseEstimator,
   Triangulator,
   PnPSolver,
+  LocalBundleAdjustment,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -75,6 +76,7 @@ import { getEnvConfig } from "./config/environment";
 // helpers
 import { getCameraIntrinsics } from "./helpers/backProjectPoints";
 import { cameraPoseToThreeJs } from "./helpers/cameraPoseConversion";
+import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
 
 /**
  * Fluent API用の設定ビルダー
@@ -411,6 +413,19 @@ export class SPALAM implements IServiceProvider {
   private sixDofComponents: Array<{ dispose(): void }> = [];
   /** 6DoFトラッキングのエラーログ抑制フラグ（毎フレームのログ洪水を防ぐ） */
   private sixDofErrorLogged: boolean = false;
+  /** 6DoF初期化用にキャッシュした深度マップ（初期化中のみ更新） */
+  private sixDofDepthMapCache: Float32Array | null = null;
+  /** 深度マップ取得の実行中フラグ */
+  private sixDofDepthMapFetching: boolean = false;
+  /** 深度マップの最終取得時刻（ms） */
+  private sixDofDepthMapFetchedAt: number = 0;
+  /** 深度マップ取得の最小間隔（ms） */
+  private readonly sixDofDepthMapRefreshInterval: number = 500;
+  /** IMU座標系から視覚ワールド座標系への回転オフセット（初期化時に推定） */
+  private sixDofImuAlignment: THREE.Quaternion | null = null;
+  /** IMU姿勢整合用の再利用クォータニオン */
+  private readonly reusableAlignedImuOrientation: THREE.Quaternion =
+    new THREE.Quaternion();
   /** 初期化時の深度事前情報用の再利用Map */
   private readonly reusableDepthPriors: Map<string, number> = new Map();
 
@@ -1242,7 +1257,7 @@ export class SPALAM implements IServiceProvider {
           const trackerResult = this.cameraTracker.update(
             features,
             currentTime,
-            this.buildSixDofDepthPriors(features)
+            () => this.buildSixDofDepthPriors(features)
           );
           cameraTrackerStatus = trackerResult.status;
           if (trackerResult.status === "tracking" && trackerResult.pose) {
@@ -1254,6 +1269,11 @@ export class SPALAM implements IServiceProvider {
             this.sixDofErrorLogged = true;
             console.error("6DoF camera tracking failed:", error);
           }
+        }
+        if (cameraTrackerStatus !== "tracking") {
+          // トラッキング喪失・再初期化後はワールド原点が変わるため、
+          // IMU整合オフセットも取り直す
+          this.sixDofImuAlignment = null;
         }
       }
 
@@ -1416,7 +1436,18 @@ export class SPALAM implements IServiceProvider {
     const poseEstimator = new PoseEstimator(cv, intrinsics);
     const triangulator = new Triangulator(cv, intrinsics);
     const pnpSolver = new PnPSolver(cv, intrinsics);
-    this.sixDofComponents = [poseEstimator, triangulator, pnpSolver];
+    // Small window and iteration budget: this runs inside the frame loop
+    // (throttled to every few keyframes), not on a worker
+    const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
+      windowSize: 5,
+      maxIterations: 3,
+    });
+    this.sixDofComponents = [
+      poseEstimator,
+      triangulator,
+      pnpSolver,
+      bundleAdjustment,
+    ];
 
     const mapInitializer = new MapInitializer(
       { poseEstimator, triangulator, intrinsics },
@@ -1424,7 +1455,13 @@ export class SPALAM implements IServiceProvider {
     );
 
     this.cameraTracker = new CameraTracker(
-      { mapInitializer, landmarkMap: new LandmarkMap(), pnpSolver },
+      {
+        mapInitializer,
+        landmarkMap: new LandmarkMap(),
+        pnpSolver,
+        triangulator,
+        bundleAdjustment,
+      },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,
         minTrackedCorrespondences:
@@ -1437,6 +1474,14 @@ export class SPALAM implements IServiceProvider {
 
   /**
    * 6DoF姿勢をレンダリングカメラへ適用（OpenCV基底 → Three.js基底に変換）
+   *
+   * 並進はIMUからは得られないため視覚姿勢をそのまま適用する。回転は、
+   * IMU有効時は視覚信頼度（PnPインライア率 × 再投影誤差係数）を重みに
+   * IMU姿勢とslerpで融合する。IMU姿勢は端末系、視覚姿勢は初期化時の
+   * 参照カメラを原点とする視覚ワールド系にあるため、最初のトラッキング
+   * フレームで両者の回転オフセットを推定し、IMU姿勢を視覚ワールド系へ
+   * 整合させてから融合する（オフセットはジャイロドリフト分だけ徐々に
+   * 劣化するが、信頼度が高い限り視覚姿勢が支配する）。
    */
   private applySixDofPose(pose: CameraPose): void {
     if (!this.arRenderer) return;
@@ -1444,23 +1489,78 @@ export class SPALAM implements IServiceProvider {
     const camera = this.arRenderer.getCamera();
     const { position, quaternion } = cameraPoseToThreeJs(pose);
     camera.position.copy(position);
-    camera.quaternion.copy(quaternion);
+
+    const imuOrientation =
+      this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()
+        ? this.deviceMotionTracker.getOrientation()
+        : null;
+
+    if (imuOrientation) {
+      if (!this.sixDofImuAlignment) {
+        this.sixDofImuAlignment = quaternion
+          .clone()
+          .multiply(imuOrientation.clone().invert());
+      }
+      this.reusableAlignedImuOrientation
+        .copy(this.sixDofImuAlignment)
+        .multiply(imuOrientation);
+      camera.quaternion
+        .copy(this.reusableAlignedImuOrientation)
+        .slerp(quaternion, THREE.MathUtils.clamp(pose.confidence, 0, 1));
+    } else {
+      camera.quaternion.copy(quaternion);
+    }
   }
 
   /**
    * 6DoF初期化用の深度事前情報を構築
    *
-   * 現状は検出済み平面の深度（P0.z）を全特徴点の粗い事前情報として使う。
-   * 特徴点ごとのニューラル深度サンプリングへの置き換えはPhase 2で行う
-   * （IMPROVEMENT_PLAN.md 1-B参照）。
+   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点位置で
+   * サンプリングした値の中央値を全特徴点共通の定数事前情報とする。
+   *
+   * 深度ネットワークの出力は相対（逆）深度であり、特徴点ごとの比は幾何学的な
+   * 意味を持たないため、あえてロバストな定数に落とす。この定数は平面深度
+   * （P0.z）フォールバックと同じ擬似単位系に属し、スケール解決の意味論を
+   * 従来と一致させる。
    */
   private buildSixDofDepthPriors(
     features: InternalFeature[]
   ): Map<string, number> | undefined {
     if (!this.cameraTracker || this.cameraTracker.isInitialized()) {
+      // 初期化完了後は不要（~1MB）なのでキャッシュを解放する
+      this.sixDofDepthMapCache = null;
       return undefined;
     }
 
+    this.refreshSixDofDepthMapCache();
+
+    this.reusableDepthPriors.clear();
+
+    const depthMapSize = this.frameProcessor.getDepthMapSize();
+    if (this.sixDofDepthMapCache && depthMapSize) {
+      const sampledPoints = sampleDepthAtFeaturePoints({
+        featurePoints: features,
+        depthMap: this.sixDofDepthMapCache,
+        // 生の深度マップはモデル出力解像度（キャンバスサイズではない）
+        mapWidth: depthMapSize.width,
+        mapHeight: depthMapSize.height,
+        featureWidth: this.frameProcessor.getOriginalWidth(),
+        featureHeight: this.frameProcessor.getOriginalHeight(),
+      });
+      const validDepths = sampledPoints
+        .map((point) => point.z)
+        .filter((depth) => Number.isFinite(depth) && depth > 0)
+        .sort((a, b) => a - b);
+      if (validDepths.length > 0) {
+        const medianDepth = validDepths[Math.floor(validDepths.length / 2)];
+        for (const feature of features) {
+          this.reusableDepthPriors.set(feature.id, medianDepth);
+        }
+        return this.reusableDepthPriors;
+      }
+    }
+
+    // Fallback: coarse constant prior from the detected plane depth
     const planeResult = this.stateManager.getPlaneResult();
     if (!planeResult) {
       return undefined;
@@ -1469,12 +1569,42 @@ export class SPALAM implements IServiceProvider {
     if (depth <= 0) {
       return undefined;
     }
-
-    this.reusableDepthPriors.clear();
     for (const feature of features) {
       this.reusableDepthPriors.set(feature.id, depth);
     }
     return this.reusableDepthPriors;
+  }
+
+  /**
+   * 6DoF初期化用の深度マップキャッシュを低頻度で更新
+   *
+   * 深度推論は重いため、トラッカーが未初期化の間だけ一定間隔で非同期に
+   * 取得する。フレームループはブロックしない。
+   */
+  private refreshSixDofDepthMapCache(): void {
+    const now = performance.now();
+    if (
+      this.sixDofDepthMapFetching ||
+      now - this.sixDofDepthMapFetchedAt < this.sixDofDepthMapRefreshInterval
+    ) {
+      return;
+    }
+
+    this.sixDofDepthMapFetching = true;
+    this.frameProcessor
+      .getDepthMap()
+      .then((depthMap) => {
+        if (depthMap) {
+          this.sixDofDepthMapCache = depthMap;
+        }
+      })
+      .catch(() => {
+        // Depth priors are optional; keep the previous cache or fallback
+      })
+      .finally(() => {
+        this.sixDofDepthMapFetching = false;
+        this.sixDofDepthMapFetchedAt = performance.now();
+      });
   }
 
   /**

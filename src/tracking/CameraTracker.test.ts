@@ -146,6 +146,31 @@ describe("CameraTracker", () => {
       expect(result.initializationFailureReason).toBe("insufficient-parallax");
     });
 
+    it("should pass reference-time depth priors to initialization attempts", () => {
+      const { tracker, mapInitializer } = createTracker({
+        attempts: [
+          {
+            success: false,
+            failureReason: "insufficient-displacement",
+            correspondenceCount: 60,
+          },
+        ],
+      });
+
+      const referencePriors = new Map([["feature_0", 2.5]]);
+      tracker.update(createFeatures(60), 0, () => referencePriors); // sets reference
+      const laterPriors = new Map([["feature_0", 9.9]]);
+      tracker.update(createFeatures(60), 100, () => laterPriors);
+
+      // The attempt must receive the priors captured with the reference
+      // frame, not the ones sampled later
+      expect(mapInitializer.attemptInitialization).toHaveBeenCalledWith(
+        expect.anything(),
+        100,
+        new Map([["feature_0", 2.5]])
+      );
+    });
+
     it("should restart the reference when correspondences die out", () => {
       const { tracker, mapInitializer } = createTracker({
         attempts: [
@@ -186,6 +211,9 @@ describe("CameraTracker", () => {
       // Extrinsic t=(0,0,1) -> camera center (0,0,-1)
       expect(result.pose!.translation.z).toBeCloseTo(-1, 10);
       expect(tracker.getLastPose()).toBe(result.pose);
+      // Confidence = inlierRatio * errorFactor
+      //            = (50/60) * (1 - 1.2/8)
+      expect(result.pose!.confidence).toBeCloseTo((50 / 60) * (1 - 1.2 / 8), 10);
     });
 
     it("should report lost with too few correspondences", () => {
@@ -256,6 +284,196 @@ describe("CameraTracker", () => {
       const result = tracker.update(createFeatures(60), 400);
       expect(result.status).toBe("initializing");
       expect(mapInitializer.setReferenceFrame).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("landmark replenishment", () => {
+    const createTrackerWithTriangulator = () => {
+      const landmarkMap = new LandmarkMap();
+      // Initialization populates the map with the first 30 features only,
+      // leaving the rest as replenishment candidates
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(30),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(30)) };
+      const triangulator = {
+        triangulate: vi.fn(
+          (
+            _points1: Array<{ x: number; y: number }>,
+            _points2: Array<{ x: number; y: number }>,
+            _pose1: unknown,
+            _pose2: unknown,
+            ids?: string[]
+          ) =>
+            (ids ?? []).map((id) => ({
+              point3D: new THREE.Vector3(0, 0, 2),
+              reprojectionError: 0.5,
+              parallaxAngle: 0.05,
+              isValid: true,
+              id,
+            }))
+        ),
+      };
+      const tracker = new CameraTracker(
+        { mapInitializer, landmarkMap, pnpSolver, triangulator },
+        { keyframeInterval: 3, minKeyframeDisplacementPixels: 5 }
+      );
+      tracker.update(createFeatures(60), 0); // sets reference
+      tracker.update(createFeatures(60), 100); // initializes (30 landmarks)
+      return { tracker, landmarkMap, triangulator };
+    };
+
+    const createDisplacedFeatures = (
+      count: number,
+      offsetX: number
+    ): Feature[] =>
+      createFeatures(count).map((feature) => ({
+        ...feature,
+        x: feature.x + offsetX,
+      }));
+
+    it("should not replenish before the keyframe interval", () => {
+      const { tracker, triangulator } = createTrackerWithTriangulator();
+
+      const result = tracker.update(createDisplacedFeatures(60, 50), 200);
+
+      expect(result.newLandmarkCount).toBe(0);
+      expect(triangulator.triangulate).not.toHaveBeenCalled();
+    });
+
+    it("should triangulate unmapped features once interval and displacement are met", () => {
+      const { tracker, landmarkMap, triangulator } =
+        createTrackerWithTriangulator();
+
+      tracker.update(createDisplacedFeatures(60, 50), 200);
+      tracker.update(createDisplacedFeatures(60, 50), 233);
+      const result = tracker.update(createDisplacedFeatures(60, 50), 266);
+
+      expect(triangulator.triangulate).toHaveBeenCalledOnce();
+      // Features 30-59 were not in the map and get triangulated
+      expect(result.newLandmarkCount).toBe(30);
+      expect(landmarkMap.size()).toBe(60);
+    });
+
+    it("should not create a keyframe without enough displacement", () => {
+      const { tracker, triangulator } = createTrackerWithTriangulator();
+
+      for (let i = 0; i < 5; i++) {
+        const result = tracker.update(createDisplacedFeatures(60, 1), 200 + i);
+        expect(result.newLandmarkCount).toBe(0);
+      }
+      expect(triangulator.triangulate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("bundle adjustment integration", () => {
+    const createBackend = (
+      optimizedPoints: Map<string, THREE.Vector3> = new Map()
+    ) => {
+      const mapPoints = new Set<string>();
+      return {
+        addKeyframe: vi.fn(() => 1),
+        addMapPoint: vi.fn((point: { id: string }) => {
+          mapPoints.add(point.id);
+        }),
+        addObservation: vi.fn(),
+        getMapPoint: vi.fn((id: string) =>
+          mapPoints.has(id) ? { id } : undefined
+        ),
+        getMapPoints: vi.fn(() => []),
+        markAsOutlier: vi.fn(),
+        optimize: vi.fn(() => ({
+          optimizedPoses: new Map(),
+          optimizedPoints,
+          finalCost: 1,
+          initialCost: 2,
+          iterations: 3,
+          converged: true,
+        })),
+        reset: vi.fn(),
+      };
+    };
+
+    it("should register keyframes and observations for mapped features", () => {
+      const backend = createBackend();
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 1 }
+      );
+
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes -> keyframe
+
+      expect(backend.addKeyframe).toHaveBeenCalledOnce();
+      expect(backend.addMapPoint).toHaveBeenCalledTimes(60);
+      expect(backend.addObservation).toHaveBeenCalledTimes(60);
+      expect(backend.optimize).toHaveBeenCalledOnce();
+    });
+
+    it("should apply bounded landmark corrections from optimization", () => {
+      // Optimization moves feature_0 far away; the applied correction
+      // must be capped at maxLandmarkCorrection
+      const optimizedPoints = new Map([
+        ["feature_0", new THREE.Vector3(10, 0, 2)],
+      ]);
+      const backend = createBackend(optimizedPoints);
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 1, maxLandmarkCorrection: 0.1 }
+      );
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+
+      // feature_0 starts at (0, 0, 2); the correction toward (10, 0, 2)
+      // is clamped to length 0.1
+      const position = landmarkMap.getLandmark("feature_0")!.position;
+      expect(position.x).toBeCloseTo(0.1, 10);
+      expect(position.z).toBeCloseTo(2, 10);
+    });
+
+    it("should throttle optimization by keyframe interval", () => {
+      const backend = createBackend();
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 2 }
+      );
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100); // first keyframe
+
+      expect(backend.addKeyframe).toHaveBeenCalledOnce();
+      expect(backend.optimize).not.toHaveBeenCalled();
     });
   });
 
