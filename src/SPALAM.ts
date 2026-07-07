@@ -1464,6 +1464,11 @@ export class SPALAM implements IServiceProvider {
 
   /**
    * 6DoF姿勢をレンダリングカメラへ適用（OpenCV基底 → Three.js基底に変換）
+   *
+   * 並進はIMUからは得られないため視覚姿勢をそのまま適用する。回転は、
+   * IMU有効時はこのフレームで既に適用済みのIMU姿勢に対して視覚信頼度
+   * （PnPインライア率 × 再投影誤差係数）を重みとしてslerpで融合する。
+   * 信頼度が下がるほどIMU姿勢に寄る。
    */
   private applySixDofPose(pose: CameraPose): void {
     if (!this.arRenderer) return;
@@ -1471,7 +1476,15 @@ export class SPALAM implements IServiceProvider {
     const camera = this.arRenderer.getCamera();
     const { position, quaternion } = cameraPoseToThreeJs(pose);
     camera.position.copy(position);
-    camera.quaternion.copy(quaternion);
+
+    if (this.imuTrackingEnabled && this.deviceMotionTracker?.isTracking()) {
+      camera.quaternion.slerp(
+        quaternion,
+        THREE.MathUtils.clamp(pose.confidence, 0, 1)
+      );
+    } else {
+      camera.quaternion.copy(quaternion);
+    }
   }
 
   /**

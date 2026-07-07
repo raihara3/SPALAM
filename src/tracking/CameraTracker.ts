@@ -76,6 +76,12 @@ export interface CameraTrackerOptions {
   /** Keyframes between bundle adjustment runs. Default: 2 */
   bundleAdjustmentInterval?: number;
   /**
+   * Reprojection error (px) at which pose confidence reaches zero.
+   * Confidence = inlierRatio * (1 - error / normalization); the inlier
+   * ratio alone is not a sufficient confidence signal. Default: 8
+   */
+  reprojectionErrorNormalization?: number;
+  /**
    * Maximum landmark position correction applied per bundle adjustment
    * run (world units). Bounded corrections keep the map visually stable;
    * an anchor that visibly jumps reads as worse tracking than a slightly
@@ -124,6 +130,7 @@ export class CameraTracker {
   private readonly minKeyframeDisplacementPixels: number;
   private readonly bundleAdjustmentInterval: number;
   private readonly maxLandmarkCorrection: number;
+  private readonly reprojectionErrorNormalization: number;
   private keyframesSinceOptimization: number = 0;
 
   private initialized: boolean = false;
@@ -161,6 +168,8 @@ export class CameraTracker {
       options?.minKeyframeDisplacementPixels ?? 20;
     this.bundleAdjustmentInterval = options?.bundleAdjustmentInterval ?? 2;
     this.maxLandmarkCorrection = options?.maxLandmarkCorrection ?? 0.1;
+    this.reprojectionErrorNormalization =
+      options?.reprojectionErrorNormalization ?? 8;
   }
 
   /**
@@ -321,7 +330,12 @@ export class CameraTracker {
     });
     this.landmarkMap.cull();
 
-    const confidence = pnpResult.inliers.length / correspondences.length;
+    const inlierRatio = pnpResult.inliers.length / correspondences.length;
+    const errorFactor = Math.max(
+      0,
+      1 - pnpResult.reprojectionError / this.reprojectionErrorNormalization
+    );
+    const confidence = inlierRatio * errorFactor;
     const pose = pnpResultToCameraPose(pnpResult, timestamp, confidence);
     this.lastPose = pose;
 

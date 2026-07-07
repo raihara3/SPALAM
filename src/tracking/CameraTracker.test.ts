@@ -211,6 +211,9 @@ describe("CameraTracker", () => {
       // Extrinsic t=(0,0,1) -> camera center (0,0,-1)
       expect(result.pose!.translation.z).toBeCloseTo(-1, 10);
       expect(tracker.getLastPose()).toBe(result.pose);
+      // Confidence = inlierRatio * errorFactor
+      //            = (50/60) * (1 - 1.2/8)
+      expect(result.pose!.confidence).toBeCloseTo((50 / 60) * (1 - 1.2 / 8), 10);
     });
 
     it("should report lost with too few correspondences", () => {
