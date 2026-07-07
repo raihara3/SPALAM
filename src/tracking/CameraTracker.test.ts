@@ -366,6 +366,160 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("depth bootstrap (no two-view initializer)", () => {
+    const intrinsics = { fx: 500, fy: 500, cx: 320, cy: 240 };
+
+    const createDepthTracker = () => {
+      const landmarkMap = new LandmarkMap();
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker({
+        intrinsics,
+        landmarkMap,
+        pnpSolver,
+      });
+      return { tracker, landmarkMap, pnpSolver };
+    };
+
+    it("should wait while depth priors are unavailable", () => {
+      const { tracker } = createDepthTracker();
+
+      const result = tracker.update(createFeatures(60), 0, () => undefined);
+
+      expect(result.status).toBe("initializing");
+      expect(result.initializationFailureReason).toBe(
+        "insufficient-depth-priors"
+      );
+      expect(tracker.isInitialized()).toBe(false);
+    });
+
+    it("should bootstrap instantly by back-projecting depth priors", () => {
+      const { tracker, landmarkMap } = createDepthTracker();
+      const features = createFeatures(60);
+      const priors = new Map(features.map((feature) => [feature.id, 2.0]));
+
+      const result = tracker.update(features, 100, () => priors);
+
+      expect(result.status).toBe("tracking");
+      expect(result.newLandmarkCount).toBe(60);
+      expect(tracker.isInitialized()).toBe(true);
+      // Reference pose is the identity at the world origin
+      expect(result.pose!.translation.length()).toBe(0);
+
+      // Back-projection: x = (u - cx) * z / fx, y = (v - cy) * z / fy, z
+      const feature = features[0];
+      const landmark = landmarkMap.getLandmark(feature.id)!;
+      expect(landmark.position.x).toBeCloseTo(
+        ((feature.x - intrinsics.cx) * 2.0) / intrinsics.fx,
+        10
+      );
+      expect(landmark.position.y).toBeCloseTo(
+        ((feature.y - intrinsics.cy) * 2.0) / intrinsics.fy,
+        10
+      );
+      expect(landmark.position.z).toBe(2.0);
+    });
+
+    it("should skip features with invalid depths and enforce the minimum", () => {
+      const { tracker } = createDepthTracker();
+      const features = createFeatures(60);
+      // Only 30 valid priors: below minReferenceFeatures (50)
+      const priors = new Map(
+        features
+          .slice(0, 30)
+          .map((feature) => [feature.id, 2.0] as [string, number])
+      );
+
+      const result = tracker.update(features, 100, () => priors);
+
+      expect(result.status).toBe("initializing");
+      expect(result.initializationFailureReason).toBe(
+        "insufficient-depth-priors"
+      );
+    });
+
+    it("should track with PnP after the depth bootstrap", () => {
+      const { tracker, pnpSolver } = createDepthTracker();
+      const features = createFeatures(60);
+      const priors = new Map(features.map((feature) => [feature.id, 2.0]));
+      tracker.update(features, 100, () => priors);
+
+      const result = tracker.update(features, 133);
+
+      expect(result.status).toBe("tracking");
+      expect(pnpSolver.solvePnP).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("short-gap bridging", () => {
+    const createTrackerWithMotionModel = () => {
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const motionModel = {
+        update: vi.fn(),
+        predictPose: vi.fn((timestamp: number) => ({
+          ...identityPose,
+          timestamp,
+          confidence: 0.8,
+        })),
+        reset: vi.fn(),
+      };
+      const tracker = new CameraTracker(
+        { mapInitializer, landmarkMap, pnpSolver, motionModel },
+        { maxLostFramesBeforeReset: 4 }
+      );
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes
+      return { tracker, motionModel };
+    };
+
+    it("should feed tracked poses into the motion model", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(60), 200);
+
+      expect(motionModel.update).toHaveBeenCalledOnce();
+    });
+
+    it("should bridge short losses with a decayed extrapolated pose", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      const result = tracker.update(createFeatures(5), 200);
+
+      expect(result.status).toBe("degraded");
+      expect(motionModel.predictPose).toHaveBeenCalledWith(200);
+      // Prediction confidence 0.8 decayed by (1 - 1/4) after one lost frame
+      expect(result.pose!.confidence).toBeCloseTo(0.8 * 0.75, 10);
+      expect(tracker.isInitialized()).toBe(true);
+    });
+
+    it("should decay confidence further with consecutive lost frames", () => {
+      const { tracker } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(5), 200);
+      const second = tracker.update(createFeatures(5), 233);
+
+      expect(second.status).toBe("degraded");
+      expect(second.pose!.confidence).toBeCloseTo(0.8 * 0.5, 10);
+    });
+
+    it("should still reset after prolonged loss", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(5), 200); // degraded 1
+      tracker.update(createFeatures(5), 233); // degraded 2
+      tracker.update(createFeatures(5), 266); // degraded 3
+      const fourth = tracker.update(createFeatures(5), 300); // reset
+
+      expect(fourth.status).toBe("lost");
+      expect(fourth.pose).toBeNull();
+      expect(tracker.isInitialized()).toBe(false);
+      expect(motionModel.reset).toHaveBeenCalled();
+    });
+  });
+
   describe("bundle adjustment integration", () => {
     const createBackend = (
       optimizedPoints: Map<string, THREE.Vector3> = new Map()
@@ -474,6 +628,129 @@ describe("CameraTracker", () => {
 
       expect(backend.addKeyframe).toHaveBeenCalledOnce();
       expect(backend.optimize).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("relocalization", () => {
+    const createTrackerWithRelocalization = () => {
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const storedPoints3D = Array.from(
+        { length: 20 },
+        (_, i) => new THREE.Vector3(i * 0.1, 0, 3)
+      );
+      const relocalizationDatabase = {
+        addKeyframe: vi.fn(() => true),
+        wouldAcceptPose: vi.fn(() => true),
+        clear: vi.fn(),
+        size: vi.fn(() => 1),
+        relocalize: vi.fn(() => ({
+          pose: { ...identityPose, timestamp: 900, confidence: 0.9 },
+          keyframe: { points3D: storedPoints3D } as never,
+          inlierMatches: Array.from({ length: 20 }, (_, i) => ({
+            queryIndex: i,
+            trainIndex: i,
+            distance: 10,
+          })),
+        })),
+      };
+      const descriptorProvider = vi.fn((features: Feature[]) => ({
+        descriptors: { rows: features.length, delete: vi.fn() } as never,
+        ids: features.map((feature) => feature.id),
+      }));
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          relocalizationDatabase: relocalizationDatabase as never,
+          descriptorProvider,
+        },
+        { maxLostFramesBeforeReset: 2, relocalizationInterval: 5 }
+      );
+      return {
+        tracker,
+        landmarkMap,
+        relocalizationDatabase,
+        descriptorProvider,
+      };
+    };
+
+    it("should store anchor keyframes when keyframes are set", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes -> keyframe
+
+      expect(relocalizationDatabase.addKeyframe).toHaveBeenCalledOnce();
+    });
+
+    it("should skip descriptor extraction when the pose would be rejected", () => {
+      const { tracker, relocalizationDatabase, descriptorProvider } =
+        createTrackerWithRelocalization();
+      relocalizationDatabase.wouldAcceptPose.mockReturnValue(false);
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+
+      expect(descriptorProvider).not.toHaveBeenCalled();
+      expect(relocalizationDatabase.addKeyframe).not.toHaveBeenCalled();
+    });
+
+    it("should clear stale anchors when a fresh world is initialized", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100); // fresh initialization
+
+      // Entries from a previous world epoch are incompatible with the new
+      // origin/scale and must not survive into it
+      expect(relocalizationDatabase.clear).toHaveBeenCalledOnce();
+    });
+
+    it("should recover the original world after a reset", () => {
+      const { tracker, landmarkMap, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+      // Two lost frames trigger a reset (maxLostFramesBeforeReset: 2)
+      tracker.update(createFeatures(5), 200);
+      tracker.update(createFeatures(5), 300);
+      expect(tracker.isInitialized()).toBe(false);
+
+      // reset() schedules an immediate relocalization attempt
+      const result = tracker.update(createFeatures(60), 400);
+
+      expect(relocalizationDatabase.relocalize).toHaveBeenCalledOnce();
+      expect(result.status).toBe("tracking");
+      expect(result.worldRestored).toBe(true);
+      expect(tracker.isInitialized()).toBe(true);
+      // Map re-seeded from the stored landmark positions
+      expect(result.newLandmarkCount).toBe(20);
+      expect(landmarkMap.getLandmark("feature_0")!.position.z).toBe(3);
+    });
+
+    it("should throttle relocalization attempts", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+      relocalizationDatabase.relocalize.mockReturnValue(null as never);
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+      tracker.update(createFeatures(5), 200);
+      tracker.update(createFeatures(5), 300); // reset -> immediate attempt scheduled
+
+      tracker.update(createFeatures(60), 400); // attempt 1 (immediate)
+      tracker.update(createFeatures(60), 433); // within interval: no attempt
+      tracker.update(createFeatures(60), 466);
+
+      expect(relocalizationDatabase.relocalize).toHaveBeenCalledOnce();
     });
   });
 

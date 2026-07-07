@@ -63,7 +63,9 @@ import {
   PoseEstimator,
   Triangulator,
   PnPSolver,
-  LocalBundleAdjustment,
+  MotionModel,
+  DescriptorMatcher,
+  RelocalizationDatabase,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -421,11 +423,28 @@ export class SPALAM implements IServiceProvider {
   private sixDofDepthMapFetchedAt: number = 0;
   /** 深度マップ取得の最小間隔（ms） */
   private readonly sixDofDepthMapRefreshInterval: number = 500;
-  /** IMU座標系から視覚ワールド座標系への回転オフセット（初期化時に推定） */
+  /** IMU座標系から視覚ワールド座標系への回転オフセット（継続再推定） */
   private sixDofImuAlignment: THREE.Quaternion | null = null;
   /** IMU姿勢整合用の再利用クォータニオン */
   private readonly reusableAlignedImuOrientation: THREE.Quaternion =
     new THREE.Quaternion();
+  private readonly reusableTargetImuAlignment: THREE.Quaternion =
+    new THREE.Quaternion();
+  /** 平面グループが6DoFワールドへ再アンカー済みかどうか */
+  private sixDofWorldAligned: boolean = false;
+  /**
+   * 一度でも6DoFワールドを確立したかどうか。
+   * 確立後はトラッキング喪失中もレガシーの再配置・スケール更新を許さない:
+   * 許すとオブジェクトが動かされ、復帰（relocalization / 差分再アンカー）の
+   * 前提が壊れて大きな位置ずれとして現れる。喪失中は凍結し、復帰経路
+   * だけがオブジェクトの見え方を変えられる
+   */
+  private sixDofWorldEverAligned: boolean = false;
+  /** 6DoF切替時のカメラ変換差分計算用の再利用行列 */
+  private readonly reusablePreviousCameraMatrix: THREE.Matrix4 =
+    new THREE.Matrix4();
+  private readonly reusableCameraDeltaMatrix: THREE.Matrix4 =
+    new THREE.Matrix4();
   /** 初期化時の深度事前情報用の再利用Map */
   private readonly reusableDepthPriors: Map<string, number> = new Map();
 
@@ -556,6 +575,10 @@ export class SPALAM implements IServiceProvider {
               this.config.features.detectionRegion === "full"
                 ? this.config.features.grid
                 : null,
+            // 環境マップは探索中の特徴点供給が前提: 追跡数減少時の補充と
+            // 全滅時の自動再検出がないと、初期視野の外でカメラ姿勢が
+            // 更新されなくなる
+            continuousDetection: this.config.tracking.enableSixDof,
           }
         );
 
@@ -1209,7 +1232,12 @@ export class SPALAM implements IServiceProvider {
     }
 
     // centerFeatureがnull、または全特徴点が失われている場合、Frustum判定で再検出をトリガー
-    if (this.frameProcessor.isReady() && this.stateManager.isPlaneDetected()) {
+    // （6DoFワールド固定中はカメラ側が追跡するため方向ベースの再配置は不要）
+    if (
+      this.frameProcessor.isReady() &&
+      this.stateManager.isPlaneDetected() &&
+      !this.isObjectWorldFixedBySixDof()
+    ) {
       const currentCenterFeature = this.frameProcessor.getCenterFeature();
       if (this.frameProcessor.hasLostFeatures() || !currentCenterFeature) {
         this.checkFrustumForRedetection();
@@ -1260,7 +1288,17 @@ export class SPALAM implements IServiceProvider {
             () => this.buildSixDofDepthPriors(features)
           );
           cameraTrackerStatus = trackerResult.status;
-          if (trackerResult.status === "tracking" && trackerResult.pose) {
+          if (
+            (trackerResult.status === "tracking" ||
+              trackerResult.status === "degraded") &&
+            trackerResult.pose
+          ) {
+            if (trackerResult.worldRestored) {
+              // relocalizationで元のワールドへ復帰した場合、オブジェクトは
+              // 既に正しいワールド位置にあるため再アンカーしない
+              this.sixDofWorldAligned = true;
+              this.sixDofWorldEverAligned = true;
+            }
             this.applySixDofPose(trackerResult.pose);
           }
         } catch (error) {
@@ -1270,10 +1308,12 @@ export class SPALAM implements IServiceProvider {
             console.error("6DoF camera tracking failed:", error);
           }
         }
-        if (cameraTrackerStatus !== "tracking") {
-          // トラッキング喪失・再初期化後はワールド原点が変わるため、
-          // IMU整合オフセットも取り直す
+        if (!this.cameraTracker.isInitialized()) {
+          // トラッカーがリセットされるとワールド原点が変わるため、IMU整合
+          // オフセットとオブジェクトの再アンカー状態を取り直す。一時的な
+          // lost（リセット前）ではワールドは不変なので維持する
           this.sixDofImuAlignment = null;
+          this.sixDofWorldAligned = false;
         }
       }
 
@@ -1315,7 +1355,11 @@ export class SPALAM implements IServiceProvider {
       }
 
       // 平面が検出済みの場合、品質状態に応じて位置更新を制御
-      if (this.stateManager.isPlaneDetected()) {
+      // （6DoFワールド固定中はオブジェクトを動かさず、カメラ側が追跡する）
+      if (
+        this.stateManager.isPlaneDetected() &&
+        !this.isObjectWorldFixedBySixDof()
+      ) {
         if (this.pendingReposition && centerFeature) {
           this.repositionToCenterFeature(centerFeature);
           this.pendingReposition = false;
@@ -1376,6 +1420,13 @@ export class SPALAM implements IServiceProvider {
       machine.transition("initializing", "bootstrapping 6DoF landmark map");
       return;
     }
+    if (cameraTrackerStatus === "degraded") {
+      machine.transition(
+        "degraded",
+        "bridging 6DoF loss with motion model extrapolation"
+      );
+      return;
+    }
     if (cameraTrackerStatus === "lost") {
       if (this.pendingReposition) {
         machine.transition(
@@ -1427,40 +1478,68 @@ export class SPALAM implements IServiceProvider {
   private initializeCameraTracker(): void {
     if (!this.video) return;
 
+    // Defend against future restart paths: the previous components own
+    // OpenCV resources (matcher, descriptor Mats) that must be released
+    this.sixDofComponents.forEach((component) => component.dispose());
+    this.sixDofComponents = [];
+
     const intrinsics = getCameraIntrinsics(
       this.config.plane.cameraIntrinsics,
       this.video.videoWidth,
       this.video.videoHeight
     );
 
-    const poseEstimator = new PoseEstimator(cv, intrinsics);
-    const triangulator = new Triangulator(cv, intrinsics);
-    const pnpSolver = new PnPSolver(cv, intrinsics);
-    // Small window and iteration budget: this runs inside the frame loop
-    // (throttled to every few keyframes), not on a worker
-    const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
-      windowSize: 5,
-      maxIterations: 3,
-    });
-    this.sixDofComponents = [
-      poseEstimator,
-      triangulator,
-      pnpSolver,
-      bundleAdjustment,
-    ];
-
-    const mapInitializer = new MapInitializer(
-      { poseEstimator, triangulator, intrinsics },
-      { minCorrespondences: this.config.tracking.minCorrespondences }
+    // Stock OpenCV.js builds do not whitelist the two-view geometry APIs;
+    // without them the map is bootstrapped from depth priors instead of
+    // an essential-matrix initialization
+    const hasTwoViewApis =
+      typeof cv.findEssentialMat === "function" &&
+      typeof cv.recoverPose === "function" &&
+      typeof cv.triangulatePoints === "function";
+    console.log(
+      `6DoF bootstrap mode: ${hasTwoViewApis ? "two-view" : "depth priors"}`
     );
 
+    const pnpSolver = new PnPSolver(cv, intrinsics);
+    const descriptorMatcher = new DescriptorMatcher(cv);
+    const relocalizationDatabase = new RelocalizationDatabase({
+      matcher: descriptorMatcher,
+      pnpSolver,
+    });
+    this.sixDofComponents = [
+      pnpSolver,
+      descriptorMatcher,
+      relocalizationDatabase,
+    ];
+
+    let mapInitializer: MapInitializer | undefined;
+    if (hasTwoViewApis) {
+      const poseEstimator = new PoseEstimator(cv, intrinsics);
+      const triangulator = new Triangulator(cv, intrinsics);
+      this.sixDofComponents.push(poseEstimator, triangulator);
+      mapInitializer = new MapInitializer(
+        { poseEstimator, triangulator, intrinsics },
+        { minCorrespondences: this.config.tracking.minCorrespondences }
+      );
+    }
+
+    // ISOLATION (device-drift investigation): bundle adjustment and
+    // landmark replenishment are the remaining subsystems that mutate the
+    // map while the object is in view, and are temporarily disabled to
+    // isolate the reported constant drift. Core = depth bootstrap + PnP
+    // + culling only. Re-enable ONE AT A TIME with device verification:
+    //   triangulator: new TwoViewTriangulator(intrinsics)  (replenishment)
+    //   bundleAdjustment: new LocalBundleAdjustment(intrinsics, {...})
     this.cameraTracker = new CameraTracker(
       {
         mapInitializer,
+        intrinsics,
         landmarkMap: new LandmarkMap(),
         pnpSolver,
-        triangulator,
-        bundleAdjustment,
+        motionModel: new MotionModel(),
+        relocalizationDatabase,
+        descriptorProvider: (features) =>
+          this.frameProcessor.computeDescriptorsForFeatures(features),
       },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,
@@ -1487,6 +1566,15 @@ export class SPALAM implements IServiceProvider {
     if (!this.arRenderer) return;
 
     const camera = this.arRenderer.getCamera();
+
+    // 6DoFワールドへの切替フレームでは、切替前後のカメラ変換差分を
+    // オブジェクトへ適用して見た目の連続性を保つ（以後ワールド固定）
+    const needsWorldAlignment = !this.sixDofWorldAligned;
+    if (needsWorldAlignment) {
+      camera.updateMatrixWorld();
+      this.reusablePreviousCameraMatrix.copy(camera.matrixWorld);
+    }
+
     const { position, quaternion } = cameraPoseToThreeJs(pose);
     camera.position.copy(position);
 
@@ -1496,10 +1584,19 @@ export class SPALAM implements IServiceProvider {
         : null;
 
     if (imuOrientation) {
+      // オフセット（IMU系→視覚ワールド系）はジャイロのヨードリフトで
+      // ゆっくり劣化する。固定のままだとIMU側へ寄せる融合が恒常的な
+      // 低速ドリフトを注入するため、視覚信頼度が高いフレームで継続的に
+      // 再推定してドリフトに追従させる
+      this.reusableTargetImuAlignment
+        .copy(quaternion)
+        .multiply(
+          this.reusableAlignedImuOrientation.copy(imuOrientation).invert()
+        );
       if (!this.sixDofImuAlignment) {
-        this.sixDofImuAlignment = quaternion
-          .clone()
-          .multiply(imuOrientation.clone().invert());
+        this.sixDofImuAlignment = this.reusableTargetImuAlignment.clone();
+      } else if (pose.confidence > 0.5) {
+        this.sixDofImuAlignment.slerp(this.reusableTargetImuAlignment, 0.1);
       }
       this.reusableAlignedImuOrientation
         .copy(this.sixDofImuAlignment)
@@ -1510,18 +1607,62 @@ export class SPALAM implements IServiceProvider {
     } else {
       camera.quaternion.copy(quaternion);
     }
+
+    if (needsWorldAlignment) {
+      this.reanchorPlaneGroupToSixDofWorld();
+      this.sixDofWorldAligned = true;
+      this.sixDofWorldEverAligned = true;
+    }
+  }
+
+  /**
+   * 平面グループを6DoFワールドへ再アンカー
+   *
+   * 切替前のカメラ変換（reusablePreviousCameraMatrixに保持）と切替後の
+   * カメラ変換の差分をオブジェクトに適用する。カメラから見た相対配置が
+   * そのまま保たれるため、切替の瞬間に画面上でオブジェクトが動かない。
+   */
+  private reanchorPlaneGroupToSixDofWorld(): void {
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (!planeGroup || !this.arRenderer) return;
+
+    const camera = this.arRenderer.getCamera();
+    camera.updateMatrixWorld();
+
+    // delta = newCameraWorld * oldCameraWorld^-1
+    this.reusableCameraDeltaMatrix
+      .copy(camera.matrixWorld)
+      .multiply(this.reusablePreviousCameraMatrix.invert());
+    planeGroup.applyMatrix4(this.reusableCameraDeltaMatrix);
+    planeGroup.updateMatrixWorld();
+  }
+
+  /**
+   * オブジェクトが6DoFワールドに固定されているかどうか
+   *
+   * トラッカーが初期化済みで再アンカーが完了している間は、オブジェクトの
+   * 位置はワールド固定とし、レガシーのcenterFeature追従・フラスタム再配置・
+   * スケール追従は行わない。トラッカーのリセットで解除される。
+   */
+  private isObjectWorldFixedBySixDof(): boolean {
+    // 一度ワールドを確立したら、喪失・リセット中も含めてオブジェクトは
+    // 凍結する。復帰はrelocalization（元ワールド）または新規初期化時の
+    // 差分再アンカー（見え方を保存）だけが行う
+    return this.sixDofWorldEverAligned;
   }
 
   /**
    * 6DoF初期化用の深度事前情報を構築
    *
-   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点位置で
-   * サンプリングした値の中央値を全特徴点共通の定数事前情報とする。
+   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点ごとに
+   * 空間平滑化サンプリングした値を返す。深度ブートストラップはこの値で
+   * 特徴点を逆投影してランドマークを生成するため、特徴点ごとの値が必要。
    *
-   * 深度ネットワークの出力は相対（逆）深度であり、特徴点ごとの比は幾何学的な
-   * 意味を持たないため、あえてロバストな定数に落とす。この定数は平面深度
-   * （P0.z）フォールバックと同じ擬似単位系に属し、スケール解決の意味論を
-   * 従来と一致させる。
+   * 値は深度ネットワークの生出力（相対深度）で、平面フィッティングや
+   * P0.z と同じ擬似単位系。ネットワーク出力は逆深度傾向のため凹凸が反転
+   * し得るが、単位系の一貫性を優先する（逆深度の正規化は将来対応）。
+   * 深度マップが使えない環境（モバイル等）では平面深度の定数にフォール
+   * バックし、マップは「平面レリーフ」として初期化される。
    */
   private buildSixDofDepthPriors(
     features: InternalFeature[]
@@ -1547,15 +1688,12 @@ export class SPALAM implements IServiceProvider {
         featureWidth: this.frameProcessor.getOriginalWidth(),
         featureHeight: this.frameProcessor.getOriginalHeight(),
       });
-      const validDepths = sampledPoints
-        .map((point) => point.z)
-        .filter((depth) => Number.isFinite(depth) && depth > 0)
-        .sort((a, b) => a - b);
-      if (validDepths.length > 0) {
-        const medianDepth = validDepths[Math.floor(validDepths.length / 2)];
-        for (const feature of features) {
-          this.reusableDepthPriors.set(feature.id, medianDepth);
+      for (const point of sampledPoints) {
+        if (Number.isFinite(point.z) && point.z > 0) {
+          this.reusableDepthPriors.set(point.id, point.z);
         }
+      }
+      if (this.reusableDepthPriors.size > 0) {
         return this.reusableDepthPriors;
       }
     }
@@ -1887,7 +2025,10 @@ export class SPALAM implements IServiceProvider {
     }
 
     // 1. 距離トラッカーを更新してスケールを計算
-    if (this.distanceTracker) {
+    // （6DoFモードでは接近/後退がカメラ並進として表現されるため、擬似
+    //   スケールは常時無効。初期化前でも有効にすると、6DoF確立の瞬間まで
+    //   スケールが暴れて「急に大きくなる」症状として現れる）
+    if (this.distanceTracker && !this.cameraTracker) {
       // Compute rotation delta from IMU for rotation compensation
       if (this.deviceMotionTracker?.isTracking()) {
         const currentOrientation = this.deviceMotionTracker.getOrientation();
@@ -2060,6 +2201,9 @@ export class SPALAM implements IServiceProvider {
     this.trackingStateMachine.reset();
     this.stageProfiler.reset();
     this.cameraTracker?.reset();
+    this.sixDofWorldAligned = false;
+    this.sixDofWorldEverAligned = false;
+    this.sixDofImuAlignment = null;
     return this;
   }
 

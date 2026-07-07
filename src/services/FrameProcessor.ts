@@ -21,6 +21,8 @@ export interface FeatureTrackingOptions {
   forwardBackwardThreshold?: number;
   /** グリッドバケッティングの設定 */
   grid?: FeatureGridOptions | null;
+  /** 継続検出（減少時の補充と全滅時の自動再検出） */
+  continuousDetection?: boolean;
 }
 
 /**
@@ -229,6 +231,15 @@ export class FrameProcessor {
    */
   public getDepthMapSize(): { width: number; height: number } | null {
     return this.depthEstimation?.getDepthMapSize() ?? null;
+  }
+
+  /**
+   * 指定した特徴点位置のORB記述子を計算（relocalization用）
+   */
+  public computeDescriptorsForFeatures(
+    features: Feature[]
+  ): { descriptors: cv.Mat; ids: string[] } | null {
+    return this.featureDetector?.computeDescriptorsForFeatures(features) ?? null;
   }
 
   /**

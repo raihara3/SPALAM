@@ -118,6 +118,9 @@ const startSPALAM = async () => {
       updateLoadingMessage("AI深度推定モデルを読み込み中...");
     }
 
+    // 6DoFトラッキングは実機での定常ドリフトが未解決のため、デモでは
+    // 無効に戻している（レガシーパイプラインで動作）。ライブラリ利用時は
+    // tracking.enableSixDof で明示的にオプトインできる
     spalam = new SPALAM();
 
     // 状態変更を監視
@@ -305,6 +308,36 @@ const createDebugPanel = (instance: SPALAM) => {
       instance.setDrawFeaturesEnabled(enabled);
     }),
   );
+
+  // 6DoFトラッキング診断HUD: どのリンク（初期化 / 追跡 / 復帰）で
+  // 問題が起きているかを実機で切り分けるための情報
+  const hud = document.createElement("div");
+  hud.style.cssText = `
+    background: rgba(0,0,0,0.7);
+    color: #0ff;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 5px;
+    white-space: pre;
+  `;
+  panel.appendChild(hud);
+
+  setInterval(() => {
+    const sixDof = instance.getSixDofTrackingStatistics();
+    const frame = instance.getFrameBudgetStatistics();
+    const lines = [
+      `state: ${instance.getTrackingState()}`,
+      sixDof
+        ? `6dof: ${sixDof.isInitialized ? "initialized" : "not initialized"}` +
+          `\nlandmarks: ${sixDof.landmarks.landmarkCount}` +
+          `\nreproj: ${sixDof.landmarks.averageReprojectionError.toFixed(2)}px`
+        : "6dof: disabled",
+      `fps: ${frame.fps.toFixed(1)}  frame: ${frame.averageFrameMs.toFixed(1)}ms`,
+      `over budget: ${(frame.overBudgetRatio * 100).toFixed(0)}%`,
+    ];
+    hud.textContent = lines.join("\n");
+  }, 250);
 
   document.body.appendChild(panel);
 };

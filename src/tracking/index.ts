@@ -33,6 +33,8 @@ export { TrackingStateMachine } from "./TrackingStateMachine";
 export { LandmarkMap } from "./LandmarkMap";
 export { MapInitializer } from "./MapInitializer";
 export { CameraTracker } from "./CameraTracker";
+export { RelocalizationDatabase } from "./RelocalizationDatabase";
+export { TwoViewTriangulator } from "./TwoViewTriangulator";
 export type { ComplementaryFilterOptions } from "./ComplementaryFilter";
 export type { DriftCorrectorOptions, StableFeature } from "./DriftCorrector";
 export type { DistanceTrackerOptions } from "./DistanceTracker";
@@ -78,4 +80,11 @@ export type {
   CameraTrackerOptions,
   CameraTrackerResult,
   CameraTrackerStatus,
+  DescriptorProvider,
 } from "./CameraTracker";
+export type {
+  RelocalizationDatabaseOptions,
+  RelocalizationKeyframe,
+  RelocalizationResult,
+} from "./RelocalizationDatabase";
+export type { TwoViewTriangulatorOptions } from "./TwoViewTriangulator";

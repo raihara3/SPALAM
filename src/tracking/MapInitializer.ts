@@ -24,7 +24,8 @@ export type InitializationFailureReason =
   | "essential-matrix-failed"
   | "pose-recovery-failed"
   | "insufficient-parallax"
-  | "triangulation-failed";
+  | "triangulation-failed"
+  | "insufficient-depth-priors";
 
 /**
  * Successful initialization output

@@ -55,6 +55,12 @@ export class FeatureDetector {
   private readonly detectionRegion: FeatureDetectionRegion; // 特徴点検出領域
   private readonly forwardBackwardThreshold: number; // FBチェックの往復誤差しきい値（処理解像度px、0以下で無効）
   private readonly grid: FeatureGridOptions | null; // グリッドバケッティング設定（nullで無効）
+  // 継続検出モード: 追跡数が減ったら新規コーナーを補充し、全滅時は
+  // 外部フラグを待たず自動再検出する（6DoF環境マップの探索に必須）
+  private readonly continuousDetection: boolean;
+  private readonly replenishRatio: number = 0.7; // この割合を下回ったら補充
+  private readonly replenishInterval: number = 5; // 補充判定の最小フレーム間隔
+  private framesSinceReplenish: number = 0;
 
   private prevGray: cv.Mat | null = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
@@ -73,6 +79,8 @@ export class FeatureDetector {
   private pooledMask: cv.Mat | null = null;
   private pooledGray: cv.Mat | null = null;
   private pooledSrc: cv.Mat | null = null;
+  // ORB extractor for relocalization descriptors (lazily created)
+  private orbExtractor: cv.Feature2D | null = null;
   private lastPooledWidth: number = 0;
   private lastPooledHeight: number = 0;
 
@@ -85,6 +93,7 @@ export class FeatureDetector {
     detectionRegion = "center",
     forwardBackwardThreshold = 0,
     grid = null,
+    continuousDetection = false,
   }: {
     cv: typeof cv;
     video: HTMLVideoElement;
@@ -94,6 +103,7 @@ export class FeatureDetector {
     detectionRegion?: FeatureDetectionRegion;
     forwardBackwardThreshold?: number;
     grid?: FeatureGridOptions | null;
+    continuousDetection?: boolean;
   }) {
     this.cv = cvInstance;
     this.video = video;
@@ -101,6 +111,7 @@ export class FeatureDetector {
     this.detectionRegion = detectionRegion;
     this.forwardBackwardThreshold = forwardBackwardThreshold;
     this.grid = grid;
+    this.continuousDetection = continuousDetection;
 
     // Store original dimensions for coordinate conversion
     this.originalWidth = video.videoWidth;
@@ -299,6 +310,28 @@ export class FeatureDetector {
   }
 
   /**
+   * 既存特徴点の近傍を検出マスクから除外する
+   *
+   * 補充検出が追跡中の点のすぐ隣に重複コーナーを作るのを防ぐ
+   */
+  private excludeFeatureNeighborhoods(
+    mask: cv.Mat,
+    features: Feature[]
+  ): void {
+    const exclusionRadius = this.minDistance * 2;
+    const zero = new this.cv.Scalar(0);
+    for (const feature of features) {
+      this.cv.circle(
+        mask,
+        new this.cv.Point(Math.round(feature.x), Math.round(feature.y)),
+        exclusionRadius,
+        zero,
+        -1
+      );
+    }
+  }
+
+  /**
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
   private detectAndTrackFeatures(): Feature[] {
@@ -365,7 +398,9 @@ export class FeatureDetector {
         });
 
         // 外部から再検出が許可されていない場合は待機
-        if (!this.redetectionAllowed) {
+        // （継続検出モードではフラグを待たず自動再検出する: 全滅時に
+        //   待機すると6DoFトラッキングとrelocalizationが再開できない）
+        if (!this.redetectionAllowed && !this.continuousDetection) {
           this.prevGray.delete();
           this.prevGray = gray.clone();
           this.trackedFeatures = [];
@@ -499,6 +534,28 @@ export class FeatureDetector {
         );
       }
 
+      // 7.5) 継続検出モード: 追跡数が閾値を下回ったら、既存特徴点の近傍を
+      //      除外したマスクで新規コーナーを補充する。カメラが新しい領域へ
+      //      移動しても特徴点（→ランドマーク）が供給され続けることが、
+      //      環境全体のマップと画角外トラッキングの前提になる
+      if (this.continuousDetection) {
+        this.framesSinceReplenish++;
+        if (
+          this.framesSinceReplenish >= this.replenishInterval &&
+          trackedFeatures.length < this.maxCorners * this.replenishRatio
+        ) {
+          this.framesSinceReplenish = 0;
+          this.excludeFeatureNeighborhoods(mask, trackedFeatures);
+          trackedFeatures.push(
+            ...this.detectNewFeatures(
+              gray,
+              mask,
+              this.maxCorners - trackedFeatures.length
+            )
+          );
+        }
+      }
+
       // 8) フレーム更新
       this.prevGray.delete();
       this.prevGray = gray.clone();
@@ -545,6 +602,10 @@ export class FeatureDetector {
     if (this.pooledSrc) {
       this.pooledSrc.delete();
       this.pooledSrc = null;
+    }
+    if (this.orbExtractor) {
+      this.orbExtractor.delete();
+      this.orbExtractor = null;
     }
     this.lastPooledWidth = 0;
     this.lastPooledHeight = 0;
@@ -735,6 +796,82 @@ export class FeatureDetector {
       feature.y > h * 0.1 &&
       feature.y < h * 0.9
     );
+  }
+
+  /**
+   * 指定した特徴点位置のORB記述子を現在の内部画像上で計算する
+   *
+   * relocalization用。記述子は勾配強度画像（オプティカルフローと同じ表現）
+   * 上で計算されるため、保存側と照合側で一貫していれば有効に機能する。
+   * 画像端に近いキーポイントはORBにより間引かれるため、返るidsは
+   * 記述子Matの行と正確に整列した部分集合になる。
+   *
+   * @param features 特徴点（元解像度座標）
+   * @returns 記述子Mat（呼び出し側がdeleteする）と行対応の特徴点IDリスト。
+   *          計算できない場合はnull
+   */
+  public computeDescriptorsForFeatures(
+    features: Feature[]
+  ): { descriptors: cv.Mat; ids: string[] } | null {
+    if (!this.prevGray || features.length === 0) {
+      return null;
+    }
+    if (!this.orbExtractor) {
+      this.orbExtractor = new this.cv.ORB();
+    }
+
+    const keypoints = new this.cv.KeyPointVector();
+    const featureIdByPosition = new Map<string, string>();
+    const positionKey = (x: number, y: number) =>
+      `${Math.round(x * 10)},${Math.round(y * 10)}`;
+
+    try {
+      for (const feature of features) {
+        const x = feature.x * this.resolutionScale;
+        const y = feature.y * this.resolutionScale;
+        keypoints.push_back({
+          pt: { x, y },
+          size: 31,
+          angle: -1,
+          response: 0,
+          octave: 0,
+          class_id: -1,
+        });
+        featureIdByPosition.set(positionKey(x, y), feature.id);
+      }
+
+      let descriptors: cv.Mat | null = null;
+      try {
+        descriptors = new this.cv.Mat();
+        this.orbExtractor.compute(this.prevGray, keypoints, descriptors);
+
+        const ids: string[] = [];
+        let aligned = true;
+        for (let i = 0; i < keypoints.size(); i++) {
+          const keypoint = keypoints.get(i);
+          const id = featureIdByPosition.get(
+            positionKey(keypoint.pt.x, keypoint.pt.y)
+          );
+          if (!id) {
+            aligned = false;
+            break;
+          }
+          ids.push(id);
+        }
+
+        if (!aligned || descriptors.rows !== ids.length || ids.length === 0) {
+          descriptors.delete();
+          return null;
+        }
+        return { descriptors, ids };
+      } catch (error) {
+        descriptors?.delete();
+        console.warn("Descriptor computation failed:", error);
+        return null;
+      }
+    } finally {
+      keypoints.delete();
+    }
   }
 
   public getTrackedFeaturePoints(): Feature[] {
