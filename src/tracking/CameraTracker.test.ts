@@ -366,6 +366,90 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("depth bootstrap (no two-view initializer)", () => {
+    const intrinsics = { fx: 500, fy: 500, cx: 320, cy: 240 };
+
+    const createDepthTracker = () => {
+      const landmarkMap = new LandmarkMap();
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker({
+        intrinsics,
+        landmarkMap,
+        pnpSolver,
+      });
+      return { tracker, landmarkMap, pnpSolver };
+    };
+
+    it("should wait while depth priors are unavailable", () => {
+      const { tracker } = createDepthTracker();
+
+      const result = tracker.update(createFeatures(60), 0, () => undefined);
+
+      expect(result.status).toBe("initializing");
+      expect(result.initializationFailureReason).toBe(
+        "insufficient-depth-priors"
+      );
+      expect(tracker.isInitialized()).toBe(false);
+    });
+
+    it("should bootstrap instantly by back-projecting depth priors", () => {
+      const { tracker, landmarkMap } = createDepthTracker();
+      const features = createFeatures(60);
+      const priors = new Map(features.map((feature) => [feature.id, 2.0]));
+
+      const result = tracker.update(features, 100, () => priors);
+
+      expect(result.status).toBe("tracking");
+      expect(result.newLandmarkCount).toBe(60);
+      expect(tracker.isInitialized()).toBe(true);
+      // Reference pose is the identity at the world origin
+      expect(result.pose!.translation.length()).toBe(0);
+
+      // Back-projection: x = (u - cx) * z / fx, y = (v - cy) * z / fy, z
+      const feature = features[0];
+      const landmark = landmarkMap.getLandmark(feature.id)!;
+      expect(landmark.position.x).toBeCloseTo(
+        ((feature.x - intrinsics.cx) * 2.0) / intrinsics.fx,
+        10
+      );
+      expect(landmark.position.y).toBeCloseTo(
+        ((feature.y - intrinsics.cy) * 2.0) / intrinsics.fy,
+        10
+      );
+      expect(landmark.position.z).toBe(2.0);
+    });
+
+    it("should skip features with invalid depths and enforce the minimum", () => {
+      const { tracker } = createDepthTracker();
+      const features = createFeatures(60);
+      // Only 30 valid priors: below minReferenceFeatures (50)
+      const priors = new Map(
+        features
+          .slice(0, 30)
+          .map((feature) => [feature.id, 2.0] as [string, number])
+      );
+
+      const result = tracker.update(features, 100, () => priors);
+
+      expect(result.status).toBe("initializing");
+      expect(result.initializationFailureReason).toBe(
+        "insufficient-depth-priors"
+      );
+    });
+
+    it("should track with PnP after the depth bootstrap", () => {
+      const { tracker, pnpSolver } = createDepthTracker();
+      const features = createFeatures(60);
+      const priors = new Map(features.map((feature) => [feature.id, 2.0]));
+      tracker.update(features, 100, () => priors);
+
+      const result = tracker.update(features, 133);
+
+      expect(result.status).toBe("tracking");
+      expect(pnpSolver.solvePnP).toHaveBeenCalledOnce();
+    });
+  });
+
   describe("short-gap bridging", () => {
     const createTrackerWithMotionModel = () => {
       const landmarkMap = new LandmarkMap();

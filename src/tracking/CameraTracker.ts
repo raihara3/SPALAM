@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Vector3 } from "three";
+import * as THREE from "three";
 import type { Feature } from "../types/Feature";
-import type { CameraPose } from "../types/Pose";
+import type { CameraPose, CameraIntrinsics } from "../types/Pose";
 import type { PnPSolver } from "./PnPSolver";
 import type { Triangulator } from "./Triangulator";
 import type { LocalBundleAdjustment } from "./LocalBundleAdjustment";
@@ -146,7 +146,8 @@ export type BundleAdjustmentBackend = Pick<
  * before applying poses to a Three.js camera.
  */
 export class CameraTracker {
-  private readonly mapInitializer: MapInitializer;
+  private readonly mapInitializer: MapInitializer | null;
+  private readonly intrinsics: CameraIntrinsics | null;
   private readonly landmarkMap: LandmarkMap;
   private readonly pnpSolver: Pick<PnPSolver, "solvePnP">;
   private readonly triangulator: Pick<Triangulator, "triangulate"> | null;
@@ -185,7 +186,16 @@ export class CameraTracker {
 
   constructor(
     dependencies: {
-      mapInitializer: MapInitializer;
+      /**
+       * Two-view bootstrap (optional). Stock OpenCV.js builds do not
+       * whitelist findEssentialMat/recoverPose/triangulatePoints, so on
+       * those runtimes omit this and provide `intrinsics` instead: the
+       * map is then bootstrapped by back-projecting features with the
+       * depth priors (depth-map / plane depth) at the reference frame.
+       */
+      mapInitializer?: MapInitializer;
+      /** Required for the depth bootstrap path */
+      intrinsics?: CameraIntrinsics;
       landmarkMap: LandmarkMap;
       pnpSolver: Pick<PnPSolver, "solvePnP">;
       /** Optional; landmark replenishment is disabled without it */
@@ -203,7 +213,8 @@ export class CameraTracker {
     },
     options?: CameraTrackerOptions
   ) {
-    this.mapInitializer = dependencies.mapInitializer;
+    this.mapInitializer = dependencies.mapInitializer ?? null;
+    this.intrinsics = dependencies.intrinsics ?? null;
     this.landmarkMap = dependencies.landmarkMap;
     this.pnpSolver = dependencies.pnpSolver;
     this.triangulator = dependencies.triangulator ?? null;
@@ -299,7 +310,7 @@ export class CameraTracker {
     this.referenceDepthPriors = null;
     this.keyframesSinceOptimization = 0;
     this.landmarkMap.clear();
-    this.mapInitializer.reset();
+    this.mapInitializer?.reset();
     this.bundleAdjustment?.reset();
     this.motionModel?.reset();
     // The relocalization database intentionally survives resets — it is
@@ -326,7 +337,12 @@ export class CameraTracker {
       return relocalized;
     }
 
-    if (!this.mapInitializer.hasReferenceFrame()) {
+    if (!this.mapInitializer) {
+      return this.updateDepthBootstrap(features, timestamp, depthPriorSupplier);
+    }
+    const mapInitializer = this.mapInitializer;
+
+    if (!mapInitializer.hasReferenceFrame()) {
       if (features.length >= this.minReferenceFeatures) {
         this.setReferenceFrame(features, timestamp, depthPriorSupplier?.());
       }
@@ -341,7 +357,7 @@ export class CameraTracker {
 
     // Use the priors captured at reference time: the triangulated depths
     // they are compared against live in the reference camera frame
-    const attempt = this.mapInitializer.attemptInitialization(
+    const attempt = mapInitializer.attemptInitialization(
       features,
       timestamp,
       this.referenceDepthPriors ?? undefined
@@ -664,10 +680,91 @@ export class CameraTracker {
     timestamp: number,
     depthPriorByFeatureId?: Map<string, number>
   ): void {
-    this.mapInitializer.setReferenceFrame(features, timestamp);
+    this.mapInitializer?.setReferenceFrame(features, timestamp);
     this.referenceDepthPriors = depthPriorByFeatureId
       ? new Map(depthPriorByFeatureId)
       : null;
+  }
+
+  /**
+   * Bootstrap the map from depth priors (no two-view geometry needed)
+   *
+   * Features are back-projected into the reference camera frame using the
+   * per-feature depth priors (neural depth map, or the plane depth as
+   * fallback). The reference camera defines the world origin, exactly as
+   * in the two-view bootstrap, and PnP takes over from the next frame.
+   * Initialization is instant and works under pure rotation; the cost is
+   * that map geometry is only as good as the depth priors until the
+   * bundle adjustment refines it.
+   */
+  private updateDepthBootstrap(
+    features: Feature[],
+    timestamp: number,
+    depthPriorSupplier?: () => Map<string, number> | undefined
+  ): CameraTrackerResult {
+    const initializing = (
+      reason: InitializationFailureReason
+    ): CameraTrackerResult => ({
+      status: "initializing",
+      pose: null,
+      correspondenceCount: 0,
+      inlierCount: 0,
+      newLandmarkCount: 0,
+      initializationFailureReason: reason,
+    });
+
+    if (!this.intrinsics) {
+      return initializing("no-reference");
+    }
+    if (features.length < this.minReferenceFeatures) {
+      return initializing("insufficient-correspondences");
+    }
+    const priors = depthPriorSupplier?.();
+    if (!priors || priors.size === 0) {
+      return initializing("insufficient-depth-priors");
+    }
+
+    const { fx, fy, cx, cy } = this.intrinsics;
+    this.landmarkMap.clear();
+    let seeded = 0;
+    for (const feature of features) {
+      const depth = priors.get(feature.id);
+      if (depth === undefined || !Number.isFinite(depth) || depth <= 0) {
+        continue;
+      }
+      const position = new THREE.Vector3(
+        ((feature.x - cx) * depth) / fx,
+        ((feature.y - cy) * depth) / fy,
+        depth
+      );
+      if (this.landmarkMap.addLandmark(feature.id, position)) {
+        seeded++;
+      }
+    }
+
+    if (seeded < this.minReferenceFeatures) {
+      this.landmarkMap.clear();
+      return initializing("insufficient-depth-priors");
+    }
+
+    const pose: CameraPose = {
+      rotation: new THREE.Matrix3().identity(),
+      translation: new THREE.Vector3(0, 0, 0),
+      quaternion: new THREE.Quaternion(),
+      timestamp,
+      confidence: 1.0,
+    };
+    this.initialized = true;
+    this.lastPose = pose;
+    this.setKeyframe(pose, features);
+
+    return {
+      status: "tracking",
+      pose,
+      correspondenceCount: seeded,
+      inlierCount: seeded,
+      newLandmarkCount: seeded,
+    };
   }
 
   private setKeyframe(pose: CameraPose, features: Feature[]): void {
@@ -716,7 +813,7 @@ export class CameraTracker {
       mappedFeatures.map((feature) => [feature.id, feature])
     );
     const points2D: Array<{ x: number; y: number }> = [];
-    const points3D: Vector3[] = [];
+    const points3D: THREE.Vector3[] = [];
     for (const id of computed.ids) {
       const feature = featureById.get(id);
       const landmark = this.landmarkMap.getLandmark(id);

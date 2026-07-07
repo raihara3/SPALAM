@@ -67,6 +67,7 @@ import {
   MotionModel,
   DescriptorMatcher,
   RelocalizationDatabase,
+  TwoViewTriangulator,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -1488,9 +1489,19 @@ export class SPALAM implements IServiceProvider {
       this.video.videoHeight
     );
 
-    const poseEstimator = new PoseEstimator(cv, intrinsics);
-    const triangulator = new Triangulator(cv, intrinsics);
+    // Stock OpenCV.js builds do not whitelist the two-view geometry APIs;
+    // without them the map is bootstrapped from depth priors instead of
+    // an essential-matrix initialization
+    const hasTwoViewApis =
+      typeof cv.findEssentialMat === "function" &&
+      typeof cv.recoverPose === "function" &&
+      typeof cv.triangulatePoints === "function";
+    console.log(
+      `6DoF bootstrap mode: ${hasTwoViewApis ? "two-view" : "depth priors"}`
+    );
+
     const pnpSolver = new PnPSolver(cv, intrinsics);
+    const twoViewTriangulator = new TwoViewTriangulator(intrinsics);
     // Small window and iteration budget: this runs inside the frame loop
     // (throttled to every few keyframes), not on a worker
     const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
@@ -1503,25 +1514,30 @@ export class SPALAM implements IServiceProvider {
       pnpSolver,
     });
     this.sixDofComponents = [
-      poseEstimator,
-      triangulator,
       pnpSolver,
       bundleAdjustment,
       descriptorMatcher,
       relocalizationDatabase,
     ];
 
-    const mapInitializer = new MapInitializer(
-      { poseEstimator, triangulator, intrinsics },
-      { minCorrespondences: this.config.tracking.minCorrespondences }
-    );
+    let mapInitializer: MapInitializer | undefined;
+    if (hasTwoViewApis) {
+      const poseEstimator = new PoseEstimator(cv, intrinsics);
+      const triangulator = new Triangulator(cv, intrinsics);
+      this.sixDofComponents.push(poseEstimator, triangulator);
+      mapInitializer = new MapInitializer(
+        { poseEstimator, triangulator, intrinsics },
+        { minCorrespondences: this.config.tracking.minCorrespondences }
+      );
+    }
 
     this.cameraTracker = new CameraTracker(
       {
         mapInitializer,
+        intrinsics,
         landmarkMap: new LandmarkMap(),
         pnpSolver,
-        triangulator,
+        triangulator: twoViewTriangulator,
         bundleAdjustment,
         motionModel: new MotionModel(),
         relocalizationDatabase,
@@ -1632,13 +1648,15 @@ export class SPALAM implements IServiceProvider {
   /**
    * 6DoF初期化用の深度事前情報を構築
    *
-   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点位置で
-   * サンプリングした値の中央値を全特徴点共通の定数事前情報とする。
+   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点ごとに
+   * 空間平滑化サンプリングした値を返す。深度ブートストラップはこの値で
+   * 特徴点を逆投影してランドマークを生成するため、特徴点ごとの値が必要。
    *
-   * 深度ネットワークの出力は相対（逆）深度であり、特徴点ごとの比は幾何学的な
-   * 意味を持たないため、あえてロバストな定数に落とす。この定数は平面深度
-   * （P0.z）フォールバックと同じ擬似単位系に属し、スケール解決の意味論を
-   * 従来と一致させる。
+   * 値は深度ネットワークの生出力（相対深度）で、平面フィッティングや
+   * P0.z と同じ擬似単位系。ネットワーク出力は逆深度傾向のため凹凸が反転
+   * し得るが、単位系の一貫性を優先する（逆深度の正規化は将来対応）。
+   * 深度マップが使えない環境（モバイル等）では平面深度の定数にフォール
+   * バックし、マップは「平面レリーフ」として初期化される。
    */
   private buildSixDofDepthPriors(
     features: InternalFeature[]
@@ -1664,15 +1682,12 @@ export class SPALAM implements IServiceProvider {
         featureWidth: this.frameProcessor.getOriginalWidth(),
         featureHeight: this.frameProcessor.getOriginalHeight(),
       });
-      const validDepths = sampledPoints
-        .map((point) => point.z)
-        .filter((depth) => Number.isFinite(depth) && depth > 0)
-        .sort((a, b) => a - b);
-      if (validDepths.length > 0) {
-        const medianDepth = validDepths[Math.floor(validDepths.length / 2)];
-        for (const feature of features) {
-          this.reusableDepthPriors.set(feature.id, medianDepth);
+      for (const point of sampledPoints) {
+        if (Number.isFinite(point.z) && point.z > 0) {
+          this.reusableDepthPriors.set(point.id, point.z);
         }
+      }
+      if (this.reusableDepthPriors.size > 0) {
         return this.reusableDepthPriors;
       }
     }
