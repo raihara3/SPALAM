@@ -63,11 +63,9 @@ import {
   PoseEstimator,
   Triangulator,
   PnPSolver,
-  LocalBundleAdjustment,
   MotionModel,
   DescriptorMatcher,
   RelocalizationDatabase,
-  TwoViewTriangulator,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -1503,13 +1501,6 @@ export class SPALAM implements IServiceProvider {
     );
 
     const pnpSolver = new PnPSolver(cv, intrinsics);
-    const twoViewTriangulator = new TwoViewTriangulator(intrinsics);
-    // Small window and iteration budget: this runs inside the frame loop
-    // (throttled to every few keyframes), not on a worker
-    const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
-      windowSize: 5,
-      maxIterations: 3,
-    });
     const descriptorMatcher = new DescriptorMatcher(cv);
     const relocalizationDatabase = new RelocalizationDatabase({
       matcher: descriptorMatcher,
@@ -1517,7 +1508,6 @@ export class SPALAM implements IServiceProvider {
     });
     this.sixDofComponents = [
       pnpSolver,
-      bundleAdjustment,
       descriptorMatcher,
       relocalizationDatabase,
     ];
@@ -1533,14 +1523,19 @@ export class SPALAM implements IServiceProvider {
       );
     }
 
+    // ISOLATION (device-drift investigation): bundle adjustment and
+    // landmark replenishment are the remaining subsystems that mutate the
+    // map while the object is in view, and are temporarily disabled to
+    // isolate the reported constant drift. Core = depth bootstrap + PnP
+    // + culling only. Re-enable ONE AT A TIME with device verification:
+    //   triangulator: new TwoViewTriangulator(intrinsics)  (replenishment)
+    //   bundleAdjustment: new LocalBundleAdjustment(intrinsics, {...})
     this.cameraTracker = new CameraTracker(
       {
         mapInitializer,
         intrinsics,
         landmarkMap: new LandmarkMap(),
         pnpSolver,
-        triangulator: twoViewTriangulator,
-        bundleAdjustment,
         motionModel: new MotionModel(),
         relocalizationDatabase,
         descriptorProvider: (features) =>
