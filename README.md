@@ -16,6 +16,7 @@ DEMO: https://raihara3.github.io/SPALAM/
 - **WebGPU Acceleration**: GPU-accelerated depth estimation when available
 - **Three.js Integration**: Built-in AR rendering with Three.js
 - **IMU Fusion**: Optional device motion tracking for improved stability
+- **6DoF Camera Tracking (experimental)**: Opt-in landmark map + RANSAC PnP tracking via the `tracking.enableSixDof` config (default: off)
 - **Fluent API**: Builder pattern for intuitive configuration
 
 ## Installation
