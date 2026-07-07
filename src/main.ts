@@ -118,17 +118,10 @@ const startSPALAM = async () => {
       updateLoadingMessage("AI深度推定モデルを読み込み中...");
     }
 
-    // 6DoFトラッキング（ランドマークマップ + RANSAC PnP）を有効化。
-    // 無効時は旧パイプライン（向き + DistanceTrackerスケール + 特徴点追従）
-    // で動作し、スケール変動・特徴点ドリフト追従・方向のみの再配置という
-    // 既知の制約がそのまま現れる
-    spalam = new SPALAM({
-      tracking: {
-        enableSixDof: true,
-        minCorrespondences: 50,
-        minTrackedCorrespondences: 15,
-      },
-    });
+    // 6DoFトラッキングは実機での定常ドリフトが未解決のため、デモでは
+    // 無効に戻している（レガシーパイプラインで動作）。ライブラリ利用時は
+    // tracking.enableSixDof で明示的にオプトインできる
+    spalam = new SPALAM();
 
     // 状態変更を監視
     spalam.onStateChange((event) => {
