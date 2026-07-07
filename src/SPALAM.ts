@@ -426,6 +426,13 @@ export class SPALAM implements IServiceProvider {
   /** IMU姿勢整合用の再利用クォータニオン */
   private readonly reusableAlignedImuOrientation: THREE.Quaternion =
     new THREE.Quaternion();
+  /** 平面グループが6DoFワールドへ再アンカー済みかどうか */
+  private sixDofWorldAligned: boolean = false;
+  /** 6DoF切替時のカメラ変換差分計算用の再利用行列 */
+  private readonly reusablePreviousCameraMatrix: THREE.Matrix4 =
+    new THREE.Matrix4();
+  private readonly reusableCameraDeltaMatrix: THREE.Matrix4 =
+    new THREE.Matrix4();
   /** 初期化時の深度事前情報用の再利用Map */
   private readonly reusableDepthPriors: Map<string, number> = new Map();
 
@@ -1209,7 +1216,12 @@ export class SPALAM implements IServiceProvider {
     }
 
     // centerFeatureがnull、または全特徴点が失われている場合、Frustum判定で再検出をトリガー
-    if (this.frameProcessor.isReady() && this.stateManager.isPlaneDetected()) {
+    // （6DoFワールド固定中はカメラ側が追跡するため方向ベースの再配置は不要）
+    if (
+      this.frameProcessor.isReady() &&
+      this.stateManager.isPlaneDetected() &&
+      !this.isObjectWorldFixedBySixDof()
+    ) {
       const currentCenterFeature = this.frameProcessor.getCenterFeature();
       if (this.frameProcessor.hasLostFeatures() || !currentCenterFeature) {
         this.checkFrustumForRedetection();
@@ -1270,10 +1282,12 @@ export class SPALAM implements IServiceProvider {
             console.error("6DoF camera tracking failed:", error);
           }
         }
-        if (cameraTrackerStatus !== "tracking") {
-          // トラッキング喪失・再初期化後はワールド原点が変わるため、
-          // IMU整合オフセットも取り直す
+        if (!this.cameraTracker.isInitialized()) {
+          // トラッカーがリセットされるとワールド原点が変わるため、IMU整合
+          // オフセットとオブジェクトの再アンカー状態を取り直す。一時的な
+          // lost（リセット前）ではワールドは不変なので維持する
           this.sixDofImuAlignment = null;
+          this.sixDofWorldAligned = false;
         }
       }
 
@@ -1315,7 +1329,11 @@ export class SPALAM implements IServiceProvider {
       }
 
       // 平面が検出済みの場合、品質状態に応じて位置更新を制御
-      if (this.stateManager.isPlaneDetected()) {
+      // （6DoFワールド固定中はオブジェクトを動かさず、カメラ側が追跡する）
+      if (
+        this.stateManager.isPlaneDetected() &&
+        !this.isObjectWorldFixedBySixDof()
+      ) {
         if (this.pendingReposition && centerFeature) {
           this.repositionToCenterFeature(centerFeature);
           this.pendingReposition = false;
@@ -1487,6 +1505,15 @@ export class SPALAM implements IServiceProvider {
     if (!this.arRenderer) return;
 
     const camera = this.arRenderer.getCamera();
+
+    // 6DoFワールドへの切替フレームでは、切替前後のカメラ変換差分を
+    // オブジェクトへ適用して見た目の連続性を保つ（以後ワールド固定）
+    const needsWorldAlignment = !this.sixDofWorldAligned;
+    if (needsWorldAlignment) {
+      camera.updateMatrixWorld();
+      this.reusablePreviousCameraMatrix.copy(camera.matrixWorld);
+    }
+
     const { position, quaternion } = cameraPoseToThreeJs(pose);
     camera.position.copy(position);
 
@@ -1510,6 +1537,44 @@ export class SPALAM implements IServiceProvider {
     } else {
       camera.quaternion.copy(quaternion);
     }
+
+    if (needsWorldAlignment) {
+      this.reanchorPlaneGroupToSixDofWorld();
+      this.sixDofWorldAligned = true;
+    }
+  }
+
+  /**
+   * 平面グループを6DoFワールドへ再アンカー
+   *
+   * 切替前のカメラ変換（reusablePreviousCameraMatrixに保持）と切替後の
+   * カメラ変換の差分をオブジェクトに適用する。カメラから見た相対配置が
+   * そのまま保たれるため、切替の瞬間に画面上でオブジェクトが動かない。
+   */
+  private reanchorPlaneGroupToSixDofWorld(): void {
+    const planeGroup = this.stateManager.getPlaneGroup();
+    if (!planeGroup || !this.arRenderer) return;
+
+    const camera = this.arRenderer.getCamera();
+    camera.updateMatrixWorld();
+
+    // delta = newCameraWorld * oldCameraWorld^-1
+    this.reusableCameraDeltaMatrix
+      .copy(camera.matrixWorld)
+      .multiply(this.reusablePreviousCameraMatrix.invert());
+    planeGroup.applyMatrix4(this.reusableCameraDeltaMatrix);
+    planeGroup.updateMatrixWorld();
+  }
+
+  /**
+   * オブジェクトが6DoFワールドに固定されているかどうか
+   *
+   * トラッカーが初期化済みで再アンカーが完了している間は、オブジェクトの
+   * 位置はワールド固定とし、レガシーのcenterFeature追従・フラスタム再配置・
+   * スケール追従は行わない。トラッカーのリセットで解除される。
+   */
+  private isObjectWorldFixedBySixDof(): boolean {
+    return this.cameraTracker?.isInitialized() === true && this.sixDofWorldAligned;
   }
 
   /**
@@ -1887,7 +1952,9 @@ export class SPALAM implements IServiceProvider {
     }
 
     // 1. 距離トラッカーを更新してスケールを計算
-    if (this.distanceTracker) {
+    // （6DoFワールド固定中は接近/後退がカメラ並進として表現されるため、
+    //   スケールによる擬似的な距離表現は不要かつ競合する）
+    if (this.distanceTracker && !this.isObjectWorldFixedBySixDof()) {
       // Compute rotation delta from IMU for rotation compensation
       if (this.deviceMotionTracker?.isTracking()) {
         const currentOrientation = this.deviceMotionTracker.getOrientation();
