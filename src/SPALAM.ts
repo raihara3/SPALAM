@@ -572,6 +572,10 @@ export class SPALAM implements IServiceProvider {
               this.config.features.detectionRegion === "full"
                 ? this.config.features.grid
                 : null,
+            // 環境マップは探索中の特徴点供給が前提: 追跡数減少時の補充と
+            // 全滅時の自動再検出がないと、初期視野の外でカメラ姿勢が
+            // 更新されなくなる
+            continuousDetection: this.config.tracking.enableSixDof,
           }
         );
 

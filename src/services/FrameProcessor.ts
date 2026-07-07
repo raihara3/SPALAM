@@ -21,6 +21,8 @@ export interface FeatureTrackingOptions {
   forwardBackwardThreshold?: number;
   /** グリッドバケッティングの設定 */
   grid?: FeatureGridOptions | null;
+  /** 継続検出（減少時の補充と全滅時の自動再検出） */
+  continuousDetection?: boolean;
 }
 
 /**

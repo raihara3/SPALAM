@@ -347,6 +347,15 @@ declare namespace cv {
   // Build information function
   function getBuildInformation(): string;
 
+  // Drawing (used for detection-mask editing)
+  function circle(
+    image: Mat,
+    center: Point,
+    radius: number,
+    color: Scalar,
+    thickness?: number
+  ): void;
+
   function FastFeatureDetector_create(
     threshold?: number,
     nonmaxSuppression?: boolean,
