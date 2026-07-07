@@ -259,6 +259,85 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("landmark replenishment", () => {
+    const createTrackerWithTriangulator = () => {
+      const landmarkMap = new LandmarkMap();
+      // Initialization populates the map with the first 30 features only,
+      // leaving the rest as replenishment candidates
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(30),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(30)) };
+      const triangulator = {
+        triangulate: vi.fn(
+          (
+            _points1: Array<{ x: number; y: number }>,
+            _points2: Array<{ x: number; y: number }>,
+            _pose1: unknown,
+            _pose2: unknown,
+            ids?: string[]
+          ) =>
+            (ids ?? []).map((id) => ({
+              point3D: new THREE.Vector3(0, 0, 2),
+              reprojectionError: 0.5,
+              parallaxAngle: 0.05,
+              isValid: true,
+              id,
+            }))
+        ),
+      };
+      const tracker = new CameraTracker(
+        { mapInitializer, landmarkMap, pnpSolver, triangulator },
+        { keyframeInterval: 3, minKeyframeDisplacementPixels: 5 }
+      );
+      tracker.update(createFeatures(60), 0); // sets reference
+      tracker.update(createFeatures(60), 100); // initializes (30 landmarks)
+      return { tracker, landmarkMap, triangulator };
+    };
+
+    const createDisplacedFeatures = (
+      count: number,
+      offsetX: number
+    ): Feature[] =>
+      createFeatures(count).map((feature) => ({
+        ...feature,
+        x: feature.x + offsetX,
+      }));
+
+    it("should not replenish before the keyframe interval", () => {
+      const { tracker, triangulator } = createTrackerWithTriangulator();
+
+      const result = tracker.update(createDisplacedFeatures(60, 50), 200);
+
+      expect(result.newLandmarkCount).toBe(0);
+      expect(triangulator.triangulate).not.toHaveBeenCalled();
+    });
+
+    it("should triangulate unmapped features once interval and displacement are met", () => {
+      const { tracker, landmarkMap, triangulator } =
+        createTrackerWithTriangulator();
+
+      tracker.update(createDisplacedFeatures(60, 50), 200);
+      tracker.update(createDisplacedFeatures(60, 50), 233);
+      const result = tracker.update(createDisplacedFeatures(60, 50), 266);
+
+      expect(triangulator.triangulate).toHaveBeenCalledOnce();
+      // Features 30-59 were not in the map and get triangulated
+      expect(result.newLandmarkCount).toBe(30);
+      expect(landmarkMap.size()).toBe(60);
+    });
+
+    it("should not create a keyframe without enough displacement", () => {
+      const { tracker, triangulator } = createTrackerWithTriangulator();
+
+      for (let i = 0; i < 5; i++) {
+        const result = tracker.update(createDisplacedFeatures(60, 1), 200 + i);
+        expect(result.newLandmarkCount).toBe(0);
+      }
+      expect(triangulator.triangulate).not.toHaveBeenCalled();
+    });
+  });
+
   describe("reset", () => {
     it("should clear the map and reference frame", () => {
       const { tracker, landmarkMap, mapInitializer } = createTracker({});

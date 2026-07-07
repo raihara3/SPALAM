@@ -1424,7 +1424,7 @@ export class SPALAM implements IServiceProvider {
     );
 
     this.cameraTracker = new CameraTracker(
-      { mapInitializer, landmarkMap: new LandmarkMap(), pnpSolver },
+      { mapInitializer, landmarkMap: new LandmarkMap(), pnpSolver, triangulator },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,
         minTrackedCorrespondences:
