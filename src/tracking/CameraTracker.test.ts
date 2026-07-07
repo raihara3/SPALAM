@@ -689,32 +689,6 @@ describe("CameraTracker", () => {
       expect(relocalizationDatabase.addKeyframe).toHaveBeenCalledOnce();
     });
 
-    it("should not store anchors when the anchor gate rejects", () => {
-      const { relocalizationDatabase, descriptorProvider } =
-        createTrackerWithRelocalization();
-      const landmarkMap2 = new LandmarkMap();
-      const mapInitializer2 = createMockInitializer([
-        createSuccessfulAttempt(60),
-      ]);
-      const pnpSolver2 = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
-      const gatedTracker = new CameraTracker(
-        {
-          mapInitializer: mapInitializer2,
-          landmarkMap: landmarkMap2,
-          pnpSolver: pnpSolver2,
-          relocalizationDatabase: relocalizationDatabase as never,
-          descriptorProvider,
-          shouldStoreAnchor: () => false,
-        },
-        { maxLostFramesBeforeReset: 2 }
-      );
-
-      gatedTracker.update(createFeatures(60), 0);
-      gatedTracker.update(createFeatures(60), 100); // initializes -> keyframe
-
-      expect(relocalizationDatabase.addKeyframe).not.toHaveBeenCalled();
-    });
-
     it("should skip descriptor extraction when the pose would be rejected", () => {
       const { tracker, relocalizationDatabase, descriptorProvider } =
         createTrackerWithRelocalization();
@@ -777,90 +751,6 @@ describe("CameraTracker", () => {
       tracker.update(createFeatures(60), 466);
 
       expect(relocalizationDatabase.relocalize).toHaveBeenCalledOnce();
-    });
-  });
-
-  describe("loop closure", () => {
-    const createLoopClosureTracker = (relocPoseX: number) => {
-      const landmarkMap = new LandmarkMap();
-      const mapInitializer = createMockInitializer([
-        createSuccessfulAttempt(60),
-      ]);
-      // PnP extrinsics t=(0,0,1) => camera center (0,0,-1), identity rotation
-      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
-      const relocalizationDatabase = {
-        addKeyframe: vi.fn(() => true),
-        wouldAcceptPose: vi.fn(() => true),
-        clear: vi.fn(),
-        size: vi.fn(() => 1),
-        relocalize: vi.fn(() => ({
-          pose: {
-            ...identityPose,
-            translation: new THREE.Vector3(relocPoseX, 0, -1),
-            timestamp: 200,
-            confidence: 0.9,
-          },
-          keyframe: { points3D: [] } as never,
-          inlierMatches: [],
-        })),
-      };
-      const descriptorProvider = vi.fn((features: Feature[]) => ({
-        descriptors: { rows: features.length, delete: vi.fn() } as never,
-        ids: features.map((feature) => feature.id),
-      }));
-      const tracker = new CameraTracker(
-        {
-          mapInitializer,
-          landmarkMap,
-          pnpSolver,
-          relocalizationDatabase: relocalizationDatabase as never,
-          descriptorProvider,
-        },
-        { loopClosureInterval: 1 }
-      );
-      tracker.update(createFeatures(60), 0); // reference
-      tracker.update(createFeatures(60), 100); // initializes (landmarks at z=2)
-      return { tracker, landmarkMap, relocalizationDatabase };
-    };
-
-    it("should rigidly correct the map when drift is detected", () => {
-      // Anchor world says the camera is at (0.5, 0, -1); PnP says (0, 0, -1)
-      const { tracker, landmarkMap } = createLoopClosureTracker(0.5);
-
-      const result = tracker.update(createFeatures(60), 200);
-
-      expect(result.status).toBe("tracking");
-      // The frame reports the anchor-world pose
-      expect(result.pose!.translation.x).toBeCloseTo(0.5, 10);
-      // Landmarks shift by the same rigid correction (identity rotations)
-      const landmark = landmarkMap.getLandmark("feature_0")!;
-      expect(landmark.position.x).toBeCloseTo(0.5, 10);
-      expect(landmark.position.z).toBeCloseTo(2, 10);
-    });
-
-    it("should reject corrections larger than the bound", () => {
-      const { tracker, landmarkMap } = createLoopClosureTracker(5);
-
-      const result = tracker.update(createFeatures(60), 200);
-
-      // Delta of 5 world units exceeds maxLoopClosureCorrection (1.0)
-      expect(result.pose!.translation.x).toBeCloseTo(0, 10);
-      expect(landmarkMap.getLandmark("feature_0")!.position.x).toBeCloseTo(
-        0,
-        10
-      );
-    });
-
-    it("should ignore deltas below the noise floor", () => {
-      const { tracker, landmarkMap } = createLoopClosureTracker(0.005);
-
-      const result = tracker.update(createFeatures(60), 200);
-
-      expect(result.pose!.translation.x).toBeCloseTo(0, 10);
-      expect(landmarkMap.getLandmark("feature_0")!.position.x).toBeCloseTo(
-        0,
-        10
-      );
     });
   });
 

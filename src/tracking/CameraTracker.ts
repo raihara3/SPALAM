@@ -116,27 +116,6 @@ export interface CameraTrackerOptions {
    * inaccurate one. Default: 0.1
    */
   maxLandmarkCorrection?: number;
-  /**
-   * Frames between loop-closure correction attempts while tracking.
-   * 0 disables loop closure (the default): with single-scale ORB
-   * descriptors the anchor-match pose estimate is noisier than the drift
-   * it is meant to correct, so periodic corrections inject a visible
-   * random walk (device-verified). Re-enable only after the anchor pose
-   * verification is upgraded (multi-scale descriptors, multi-anchor
-   * consistency). Default: 0
-   */
-  loopClosureInterval?: number;
-  /**
-   * Minimum pose translation delta before a loop-closure correction is
-   * applied (world units); smaller deltas are noise. Default: 0.02
-   */
-  minLoopClosureCorrection?: number;
-  /**
-   * Maximum pose translation delta a loop-closure correction may apply
-   * (world units); larger deltas indicate a false anchor match and are
-   * rejected. Default: 1.0
-   */
-  maxLoopClosureCorrection?: number;
 }
 
 /**
@@ -182,7 +161,6 @@ export class CameraTracker {
     "addKeyframe" | "relocalize" | "size" | "wouldAcceptPose" | "clear"
   > | null;
   private readonly descriptorProvider: DescriptorProvider | null;
-  private readonly shouldStoreAnchor: (() => boolean) | null;
 
   private readonly minReferenceFeatures: number;
   private readonly minTrackedCorrespondences: number;
@@ -195,12 +173,8 @@ export class CameraTracker {
   private readonly reprojectionErrorNormalization: number;
   private readonly relocalizationInterval: number;
   private readonly minKeyframeFeaturesForRelocalization: number;
-  private readonly loopClosureInterval: number;
-  private readonly minLoopClosureCorrection: number;
-  private readonly maxLoopClosureCorrection: number;
   private keyframesSinceOptimization: number = 0;
   private framesSinceRelocalizationAttempt: number = 0;
-  private framesSinceLoopClosure: number = 0;
 
   private initialized: boolean = false;
   private lastPose: CameraPose | null = null;
@@ -236,13 +210,6 @@ export class CameraTracker {
         "addKeyframe" | "relocalize" | "size" | "wouldAcceptPose" | "clear"
       >;
       descriptorProvider?: DescriptorProvider;
-      /**
-       * Gate for anchor storage and loop-closure attempts. Return true
-       * only when the content region is visible and worth anchoring
-       * (e.g. the AR object is inside the camera frustum). Without this,
-       * anchors stored during drifted exploration poison recovery.
-       */
-      shouldStoreAnchor?: () => boolean;
     },
     options?: CameraTrackerOptions
   ) {
@@ -255,7 +222,6 @@ export class CameraTracker {
     this.motionModel = dependencies.motionModel ?? null;
     this.relocalizationDatabase = dependencies.relocalizationDatabase ?? null;
     this.descriptorProvider = dependencies.descriptorProvider ?? null;
-    this.shouldStoreAnchor = dependencies.shouldStoreAnchor ?? null;
 
     this.minReferenceFeatures = options?.minReferenceFeatures ?? 50;
     this.minTrackedCorrespondences = options?.minTrackedCorrespondences ?? 15;
@@ -271,9 +237,6 @@ export class CameraTracker {
     this.relocalizationInterval = options?.relocalizationInterval ?? 15;
     this.minKeyframeFeaturesForRelocalization =
       options?.minKeyframeFeaturesForRelocalization ?? 20;
-    this.loopClosureInterval = options?.loopClosureInterval ?? 0;
-    this.minLoopClosureCorrection = options?.minLoopClosureCorrection ?? 0.02;
-    this.maxLoopClosureCorrection = options?.maxLoopClosureCorrection ?? 1.0;
   }
 
   /**
@@ -354,7 +317,6 @@ export class CameraTracker {
     // what allows recovering the original world. Schedule an immediate
     // relocalization attempt on the next frame.
     this.framesSinceRelocalizationAttempt = this.relocalizationInterval;
-    this.framesSinceLoopClosure = 0;
   }
 
   /**
@@ -478,8 +440,7 @@ export class CameraTracker {
       1 - pnpResult.reprojectionError / this.reprojectionErrorNormalization
     );
     const confidence = inlierRatio * errorFactor;
-    let pose = pnpResultToCameraPose(pnpResult, timestamp, confidence);
-    pose = this.maybeApplyLoopClosure(features, pose, timestamp);
+    const pose = pnpResultToCameraPose(pnpResult, timestamp, confidence);
     this.lastPose = pose;
     this.motionModel?.update(pose);
 
@@ -491,114 +452,6 @@ export class CameraTracker {
       correspondenceCount: correspondences.length,
       inlierCount: pnpResult.inliers.length,
       newLandmarkCount,
-    };
-  }
-
-  /**
-   * Bounded loop-closure correction against the anchor keyframes
-   *
-   * Exploration accumulates odometry drift; when the content region is
-   * visible again, matching against the stored anchors yields the pose in
-   * the anchor world. If the verified delta is small enough to be drift
-   * (not a false match), the whole map is rigidly transformed so that the
-   * current view aligns with the anchors again — the object's apparent
-   * drift snaps back. T = M_anchor * M_pnp^-1 applied to every landmark.
-   */
-  private maybeApplyLoopClosure(
-    features: Feature[],
-    pose: CameraPose,
-    timestamp: number
-  ): CameraPose {
-    if (this.loopClosureInterval <= 0) {
-      return pose;
-    }
-    if (
-      !this.relocalizationDatabase ||
-      this.relocalizationDatabase.size() === 0 ||
-      !this.descriptorProvider
-    ) {
-      return pose;
-    }
-    if (this.shouldStoreAnchor && !this.shouldStoreAnchor()) {
-      return pose;
-    }
-    this.framesSinceLoopClosure++;
-    if (this.framesSinceLoopClosure < this.loopClosureInterval) {
-      return pose;
-    }
-    this.framesSinceLoopClosure = 0;
-
-    const computed = this.descriptorProvider(features);
-    if (!computed) {
-      return pose;
-    }
-
-    try {
-      const featureById = new Map(
-        features.map((feature) => [feature.id, feature])
-      );
-      const queryPoints2D = computed.ids.map((id) => {
-        const feature = featureById.get(id)!;
-        return { x: feature.x, y: feature.y };
-      });
-      const result = this.relocalizationDatabase.relocalize(
-        computed.descriptors,
-        queryPoints2D,
-        timestamp
-      );
-      if (!result) {
-        return pose;
-      }
-
-      const translationDelta = result.pose.translation.distanceTo(
-        pose.translation
-      );
-      if (
-        translationDelta < this.minLoopClosureCorrection ||
-        translationDelta > this.maxLoopClosureCorrection
-      ) {
-        return pose;
-      }
-
-      // T = M_anchor * M_pnp^-1 maps the drifted world onto the anchor world
-      const correction = this.poseToMatrix(result.pose).multiply(
-        this.poseToMatrix(pose).invert()
-      );
-      for (const landmark of this.landmarkMap.getLandmarks()) {
-        landmark.position.applyMatrix4(correction);
-      }
-      if (this.lastKeyframe) {
-        this.lastKeyframe.pose = this.transformPose(
-          this.lastKeyframe.pose,
-          correction
-        );
-      }
-      // The BA backend's keyframes are now in a stale frame; restart it
-      this.bundleAdjustment?.reset();
-      this.keyframesSinceOptimization = 0;
-
-      return result.pose;
-    } finally {
-      computed.descriptors.delete();
-    }
-  }
-
-  private poseToMatrix(pose: CameraPose): THREE.Matrix4 {
-    return new THREE.Matrix4()
-      .setFromMatrix3(pose.rotation)
-      .setPosition(pose.translation);
-  }
-
-  private transformPose(pose: CameraPose, transform: THREE.Matrix4): CameraPose {
-    const matrix = this.poseToMatrix(pose).premultiply(transform);
-    const rotation = new THREE.Matrix3().setFromMatrix4(matrix);
-    const translation = new THREE.Vector3().setFromMatrixPosition(matrix);
-    return {
-      rotation,
-      translation,
-      quaternion: new THREE.Quaternion().setFromRotationMatrix(matrix),
-      timestamp: pose.timestamp,
-      confidence: pose.confidence,
     };
   }
 
@@ -936,11 +789,6 @@ export class CameraTracker {
     features: Feature[]
   ): void {
     if (!this.relocalizationDatabase || !this.descriptorProvider) {
-      return;
-    }
-    // Anchors are only useful near the content region; entries stored
-    // during drifted exploration poison later recoveries
-    if (this.shouldStoreAnchor && !this.shouldStoreAnchor()) {
       return;
     }
     // Distance pre-check before the expensive descriptor extraction: in

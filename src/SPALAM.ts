@@ -1501,12 +1501,7 @@ export class SPALAM implements IServiceProvider {
     );
 
     const pnpSolver = new PnPSolver(cv, intrinsics);
-    // Tighter gates than the defaults: low-parallax triangulations are the
-    // main fuel of exploration drift
-    const twoViewTriangulator = new TwoViewTriangulator(intrinsics, {
-      minParallax: 0.02,
-      maxReprojectionError: 2,
-    });
+    const twoViewTriangulator = new TwoViewTriangulator(intrinsics);
     // Small window and iteration budget: this runs inside the frame loop
     // (throttled to every few keyframes), not on a worker
     const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
@@ -1548,7 +1543,6 @@ export class SPALAM implements IServiceProvider {
         relocalizationDatabase,
         descriptorProvider: (features) =>
           this.frameProcessor.computeDescriptorsForFeatures(features),
-        shouldStoreAnchor: () => this.isObjectVisibleForAnchoring(),
       },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,
@@ -1558,31 +1552,6 @@ export class SPALAM implements IServiceProvider {
     );
 
     console.log("6DoF camera tracker initialized");
-  }
-
-  /**
-   * ARオブジェクトがアンカー保存・ループクロージャに適した視界内にあるか
-   *
-   * ドリフトした探索中に保存されたアンカーは復帰を汚染するため、
-   * オブジェクト（コンテンツ領域）が画角内にあるときだけ許可する
-   */
-  private isObjectVisibleForAnchoring(): boolean {
-    if (!this.arRenderer || !this.stateManager.isPlaneDetected()) {
-      return false;
-    }
-    const planeGroup = this.stateManager.getPlaneGroup();
-    if (!planeGroup) {
-      return false;
-    }
-    const camera = this.arRenderer.getCamera();
-    camera.updateMatrixWorld();
-    this.frustumMatrix.multiplyMatrices(
-      camera.projectionMatrix,
-      camera.matrixWorldInverse
-    );
-    this.frustum.setFromProjectionMatrix(this.frustumMatrix);
-    planeGroup.getWorldPosition(this.reusablePlaneCenter);
-    return this.frustum.containsPoint(this.reusablePlaneCenter);
   }
 
   /**
