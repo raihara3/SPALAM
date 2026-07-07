@@ -47,8 +47,15 @@ export interface RelocalizationDatabaseOptions {
   minKeyframeDistance?: number;
   /** Minimum descriptor matches before attempting PnP. Default: 15 */
   minMatches?: number;
-  /** Minimum PnP inliers for a verified relocalization. Default: 10 */
+  /** Minimum PnP inliers for a verified relocalization. Default: 12 */
   minInliers?: number;
+  /**
+   * Minimum ratio of PnP inliers to descriptor matches. Repetitive
+   * texture (wood grain, tiles) produces many plausible-but-wrong
+   * matches; a low inlier ratio is the signature of such a false
+   * positive even when the absolute inlier count passes. Default: 0.6
+   */
+  minInlierRatio?: number;
   /** Maximum PnP reprojection error for a verified relocalization (px). Default: 8 */
   maxReprojectionError?: number;
 }
@@ -73,6 +80,7 @@ export class RelocalizationDatabase {
   private readonly minKeyframeDistance: number;
   private readonly minMatches: number;
   private readonly minInliers: number;
+  private readonly minInlierRatio: number;
   private readonly maxReprojectionError: number;
 
   private readonly keyframes: RelocalizationKeyframe[] = [];
@@ -91,7 +99,8 @@ export class RelocalizationDatabase {
     this.maxKeyframes = options?.maxKeyframes ?? 8;
     this.minKeyframeDistance = options?.minKeyframeDistance ?? 0.1;
     this.minMatches = options?.minMatches ?? 15;
-    this.minInliers = options?.minInliers ?? 10;
+    this.minInliers = options?.minInliers ?? 12;
+    this.minInlierRatio = options?.minInlierRatio ?? 0.6;
     this.maxReprojectionError = options?.maxReprojectionError ?? 8;
   }
 
@@ -199,6 +208,8 @@ export class RelocalizationDatabase {
         !pnpResult ||
         !pnpResult.isValid ||
         pnpResult.inliers.length < this.minInliers ||
+        pnpResult.inliers.length / correspondences.length <
+          this.minInlierRatio ||
         pnpResult.reprojectionError > this.maxReprojectionError
       ) {
         continue;

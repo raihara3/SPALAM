@@ -432,11 +432,13 @@ export class SPALAM implements IServiceProvider {
   /** 平面グループが6DoFワールドへ再アンカー済みかどうか */
   private sixDofWorldAligned: boolean = false;
   /**
-   * relocalizationによる元ワールド復帰を待機中かどうか。
-   * この間レガシーの再配置を許すと、復帰時に「オブジェクトは元の位置に
-   * ある」という前提が壊れてテレポートするため、オブジェクトを凍結する
+   * 一度でも6DoFワールドを確立したかどうか。
+   * 確立後はトラッキング喪失中もレガシーの再配置・スケール更新を許さない:
+   * 許すとオブジェクトが動かされ、復帰（relocalization / 差分再アンカー）の
+   * 前提が壊れて大きな位置ずれとして現れる。喪失中は凍結し、復帰経路
+   * だけがオブジェクトの見え方を変えられる
    */
-  private sixDofAwaitingRelocalization: boolean = false;
+  private sixDofWorldEverAligned: boolean = false;
   /** 6DoF切替時のカメラ変換差分計算用の再利用行列 */
   private readonly reusablePreviousCameraMatrix: THREE.Matrix4 =
     new THREE.Matrix4();
@@ -1294,6 +1296,7 @@ export class SPALAM implements IServiceProvider {
               // relocalizationで元のワールドへ復帰した場合、オブジェクトは
               // 既に正しいワールド位置にあるため再アンカーしない
               this.sixDofWorldAligned = true;
+              this.sixDofWorldEverAligned = true;
             }
             this.applySixDofPose(trackerResult.pose);
           }
@@ -1308,13 +1311,8 @@ export class SPALAM implements IServiceProvider {
           // トラッカーがリセットされるとワールド原点が変わるため、IMU整合
           // オフセットとオブジェクトの再アンカー状態を取り直す。一時的な
           // lost（リセット前）ではワールドは不変なので維持する
-          if (this.sixDofWorldAligned && this.cameraTracker.canRelocalize()) {
-            this.sixDofAwaitingRelocalization = true;
-          }
           this.sixDofImuAlignment = null;
           this.sixDofWorldAligned = false;
-        } else {
-          this.sixDofAwaitingRelocalization = false;
         }
       }
 
@@ -1591,6 +1589,7 @@ export class SPALAM implements IServiceProvider {
     if (needsWorldAlignment) {
       this.reanchorPlaneGroupToSixDofWorld();
       this.sixDofWorldAligned = true;
+      this.sixDofWorldEverAligned = true;
     }
   }
 
@@ -1624,13 +1623,10 @@ export class SPALAM implements IServiceProvider {
    * スケール追従は行わない。トラッカーのリセットで解除される。
    */
   private isObjectWorldFixedBySixDof(): boolean {
-    if (this.cameraTracker?.isInitialized() === true && this.sixDofWorldAligned) {
-      return true;
-    }
-    // relocalization待機中もオブジェクトを凍結する: 復帰時にワールド固定の
-    // 不変条件が成立している必要がある（レガシー再配置が動かしてしまうと
-    // 復帰の瞬間にテレポートが起きる）
-    return this.sixDofAwaitingRelocalization;
+    // 一度ワールドを確立したら、喪失・リセット中も含めてオブジェクトは
+    // 凍結する。復帰はrelocalization（元ワールド）または新規初期化時の
+    // 差分再アンカー（見え方を保存）だけが行う
+    return this.sixDofWorldEverAligned;
   }
 
   /**
@@ -2008,9 +2004,10 @@ export class SPALAM implements IServiceProvider {
     }
 
     // 1. 距離トラッカーを更新してスケールを計算
-    // （6DoFワールド固定中は接近/後退がカメラ並進として表現されるため、
-    //   スケールによる擬似的な距離表現は不要かつ競合する）
-    if (this.distanceTracker && !this.isObjectWorldFixedBySixDof()) {
+    // （6DoFモードでは接近/後退がカメラ並進として表現されるため、擬似
+    //   スケールは常時無効。初期化前でも有効にすると、6DoF確立の瞬間まで
+    //   スケールが暴れて「急に大きくなる」症状として現れる）
+    if (this.distanceTracker && !this.cameraTracker) {
       // Compute rotation delta from IMU for rotation compensation
       if (this.deviceMotionTracker?.isTracking()) {
         const currentOrientation = this.deviceMotionTracker.getOrientation();
@@ -2184,7 +2181,7 @@ export class SPALAM implements IServiceProvider {
     this.stageProfiler.reset();
     this.cameraTracker?.reset();
     this.sixDofWorldAligned = false;
-    this.sixDofAwaitingRelocalization = false;
+    this.sixDofWorldEverAligned = false;
     this.sixDofImuAlignment = null;
     return this;
   }

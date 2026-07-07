@@ -190,6 +190,20 @@ describe("RelocalizationDatabase", () => {
       ).toBeNull();
     });
 
+    it("should reject a low inlier ratio (repetitive-texture false positive)", () => {
+      // 40 matches but only 13 inliers: passes the absolute count but the
+      // ratio (0.325) is the signature of a wrong match on repeated texture
+      const { database } = createDatabase({
+        matchCount: 40,
+        pnpResult: createPnPResult(13),
+      });
+      seed(database);
+
+      expect(
+        database.relocalize(createDescriptorMat(20), createPoints(20).points2D, 500)
+      ).toBeNull();
+    });
+
     it("should reject when the reprojection error is too large", () => {
       const { database } = createDatabase({
         pnpResult: createPnPResult(15, 20),
