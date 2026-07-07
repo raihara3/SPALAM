@@ -7,6 +7,7 @@ import type { Feature } from "../types/Feature";
 import type { CameraPose } from "../types/Pose";
 import type { PnPSolver } from "./PnPSolver";
 import type { Triangulator } from "./Triangulator";
+import type { LocalBundleAdjustment } from "./LocalBundleAdjustment";
 import type {
   MapInitializer,
   InitializationFailureReason,
@@ -72,7 +73,29 @@ export interface CameraTrackerOptions {
    * Default: 20
    */
   minKeyframeDisplacementPixels?: number;
+  /** Keyframes between bundle adjustment runs. Default: 2 */
+  bundleAdjustmentInterval?: number;
+  /**
+   * Maximum landmark position correction applied per bundle adjustment
+   * run (world units). Bounded corrections keep the map visually stable;
+   * an anchor that visibly jumps reads as worse tracking than a slightly
+   * inaccurate one. Default: 0.1
+   */
+  maxLandmarkCorrection?: number;
 }
+
+/**
+ * Subset of LocalBundleAdjustment used by the tracker
+ */
+export type BundleAdjustmentBackend = Pick<
+  LocalBundleAdjustment,
+  | "addKeyframe"
+  | "addMapPoint"
+  | "addObservation"
+  | "getMapPoint"
+  | "optimize"
+  | "reset"
+>;
 
 /**
  * Camera Tracker
@@ -91,6 +114,7 @@ export class CameraTracker {
   private readonly landmarkMap: LandmarkMap;
   private readonly pnpSolver: Pick<PnPSolver, "solvePnP">;
   private readonly triangulator: Pick<Triangulator, "triangulate"> | null;
+  private readonly bundleAdjustment: BundleAdjustmentBackend | null;
 
   private readonly minReferenceFeatures: number;
   private readonly minTrackedCorrespondences: number;
@@ -98,6 +122,9 @@ export class CameraTracker {
   private readonly maxLostFramesBeforeReset: number;
   private readonly keyframeInterval: number;
   private readonly minKeyframeDisplacementPixels: number;
+  private readonly bundleAdjustmentInterval: number;
+  private readonly maxLandmarkCorrection: number;
+  private keyframesSinceOptimization: number = 0;
 
   private initialized: boolean = false;
   private lastPose: CameraPose | null = null;
@@ -114,6 +141,8 @@ export class CameraTracker {
       pnpSolver: Pick<PnPSolver, "solvePnP">;
       /** Optional; landmark replenishment is disabled without it */
       triangulator?: Pick<Triangulator, "triangulate">;
+      /** Optional; keyframe/landmark refinement is disabled without it */
+      bundleAdjustment?: BundleAdjustmentBackend;
     },
     options?: CameraTrackerOptions
   ) {
@@ -121,6 +150,7 @@ export class CameraTracker {
     this.landmarkMap = dependencies.landmarkMap;
     this.pnpSolver = dependencies.pnpSolver;
     this.triangulator = dependencies.triangulator ?? null;
+    this.bundleAdjustment = dependencies.bundleAdjustment ?? null;
 
     this.minReferenceFeatures = options?.minReferenceFeatures ?? 50;
     this.minTrackedCorrespondences = options?.minTrackedCorrespondences ?? 15;
@@ -129,6 +159,8 @@ export class CameraTracker {
     this.keyframeInterval = options?.keyframeInterval ?? 10;
     this.minKeyframeDisplacementPixels =
       options?.minKeyframeDisplacementPixels ?? 20;
+    this.bundleAdjustmentInterval = options?.bundleAdjustmentInterval ?? 2;
+    this.maxLandmarkCorrection = options?.maxLandmarkCorrection ?? 0.1;
   }
 
   /**
@@ -187,8 +219,10 @@ export class CameraTracker {
     this.lastKeyframe = null;
     this.framesSinceKeyframe = 0;
     this.referenceDepthPriors = null;
+    this.keyframesSinceOptimization = 0;
     this.landmarkMap.clear();
     this.mapInitializer.reset();
+    this.bundleAdjustment?.reset();
   }
 
   /**
@@ -415,5 +449,90 @@ export class CameraTracker {
     }
     this.lastKeyframe = { pose, featurePositions };
     this.framesSinceKeyframe = 0;
+
+    this.registerKeyframeWithBundleAdjustment(pose, features);
+  }
+
+  /**
+   * Feed the new keyframe into the bundle adjustment backend and run a
+   * throttled optimization pass.
+   *
+   * The backend keeps its own sliding window and mutates only its own
+   * copies; optimized landmark positions are applied back to the live map
+   * with a bounded correction so refinement never causes visible jumps.
+   * Optimization runs only every bundleAdjustmentInterval keyframes (i.e.
+   * a small multiple of the keyframe interval in frames), keeping its cost
+   * off the per-frame budget.
+   */
+  private registerKeyframeWithBundleAdjustment(
+    pose: CameraPose,
+    features: Feature[]
+  ): void {
+    if (!this.bundleAdjustment) {
+      return;
+    }
+
+    const keyframeId = this.bundleAdjustment.addKeyframe({
+      id: 0, // assigned by the backend
+      pose: {
+        rotation: pose.rotation.clone(),
+        translation: pose.translation.clone(),
+        quaternion: pose.quaternion.clone(),
+        timestamp: pose.timestamp,
+        confidence: pose.confidence,
+      },
+      features,
+      descriptors: null,
+      timestamp: pose.timestamp,
+    });
+
+    features.forEach((feature, featureIndex) => {
+      const landmark = this.landmarkMap.getLandmark(feature.id);
+      if (!landmark) {
+        return;
+      }
+      if (!this.bundleAdjustment!.getMapPoint(feature.id)) {
+        this.bundleAdjustment!.addMapPoint({
+          id: feature.id,
+          position: landmark.position.clone(),
+          observations: new Map(),
+          observationCount: 0,
+          isValid: true,
+        });
+      }
+      this.bundleAdjustment!.addObservation(feature.id, keyframeId, featureIndex);
+    });
+
+    this.keyframesSinceOptimization++;
+    if (this.keyframesSinceOptimization >= this.bundleAdjustmentInterval) {
+      this.keyframesSinceOptimization = 0;
+      this.runBundleAdjustment();
+    }
+  }
+
+  private runBundleAdjustment(): void {
+    if (!this.bundleAdjustment) {
+      return;
+    }
+
+    const result = this.bundleAdjustment.optimize();
+    result.optimizedPoints.forEach((position, id) => {
+      const landmark = this.landmarkMap.getLandmark(id);
+      if (!landmark) {
+        return;
+      }
+      const correction = position.clone().sub(landmark.position);
+      const distance = correction.length();
+      if (distance === 0) {
+        return;
+      }
+      if (distance > this.maxLandmarkCorrection) {
+        correction.multiplyScalar(this.maxLandmarkCorrection / distance);
+      }
+      this.landmarkMap.updatePosition(
+        id,
+        landmark.position.clone().add(correction)
+      );
+    });
   }
 }

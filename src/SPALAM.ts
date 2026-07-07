@@ -63,6 +63,7 @@ import {
   PoseEstimator,
   Triangulator,
   PnPSolver,
+  LocalBundleAdjustment,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -1425,7 +1426,18 @@ export class SPALAM implements IServiceProvider {
     const poseEstimator = new PoseEstimator(cv, intrinsics);
     const triangulator = new Triangulator(cv, intrinsics);
     const pnpSolver = new PnPSolver(cv, intrinsics);
-    this.sixDofComponents = [poseEstimator, triangulator, pnpSolver];
+    // Small window and iteration budget: this runs inside the frame loop
+    // (throttled to every few keyframes), not on a worker
+    const bundleAdjustment = new LocalBundleAdjustment(intrinsics, {
+      windowSize: 5,
+      maxIterations: 3,
+    });
+    this.sixDofComponents = [
+      poseEstimator,
+      triangulator,
+      pnpSolver,
+      bundleAdjustment,
+    ];
 
     const mapInitializer = new MapInitializer(
       { poseEstimator, triangulator, intrinsics },
@@ -1433,7 +1445,13 @@ export class SPALAM implements IServiceProvider {
     );
 
     this.cameraTracker = new CameraTracker(
-      { mapInitializer, landmarkMap: new LandmarkMap(), pnpSolver, triangulator },
+      {
+        mapInitializer,
+        landmarkMap: new LandmarkMap(),
+        pnpSolver,
+        triangulator,
+        bundleAdjustment,
+      },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,
         minTrackedCorrespondences:

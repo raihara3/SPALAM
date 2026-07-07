@@ -363,6 +363,115 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("bundle adjustment integration", () => {
+    const createBackend = (
+      optimizedPoints: Map<string, THREE.Vector3> = new Map()
+    ) => {
+      const mapPoints = new Set<string>();
+      return {
+        addKeyframe: vi.fn(() => 1),
+        addMapPoint: vi.fn((point: { id: string }) => {
+          mapPoints.add(point.id);
+        }),
+        addObservation: vi.fn(),
+        getMapPoint: vi.fn((id: string) =>
+          mapPoints.has(id) ? { id } : undefined
+        ),
+        optimize: vi.fn(() => ({
+          optimizedPoses: new Map(),
+          optimizedPoints,
+          finalCost: 1,
+          initialCost: 2,
+          iterations: 3,
+          converged: true,
+        })),
+        reset: vi.fn(),
+      };
+    };
+
+    it("should register keyframes and observations for mapped features", () => {
+      const backend = createBackend();
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 1 }
+      );
+
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes -> keyframe
+
+      expect(backend.addKeyframe).toHaveBeenCalledOnce();
+      expect(backend.addMapPoint).toHaveBeenCalledTimes(60);
+      expect(backend.addObservation).toHaveBeenCalledTimes(60);
+      expect(backend.optimize).toHaveBeenCalledOnce();
+    });
+
+    it("should apply bounded landmark corrections from optimization", () => {
+      // Optimization moves feature_0 far away; the applied correction
+      // must be capped at maxLandmarkCorrection
+      const optimizedPoints = new Map([
+        ["feature_0", new THREE.Vector3(10, 0, 2)],
+      ]);
+      const backend = createBackend(optimizedPoints);
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 1, maxLandmarkCorrection: 0.1 }
+      );
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+
+      // feature_0 starts at (0, 0, 2); the correction toward (10, 0, 2)
+      // is clamped to length 0.1
+      const position = landmarkMap.getLandmark("feature_0")!.position;
+      expect(position.x).toBeCloseTo(0.1, 10);
+      expect(position.z).toBeCloseTo(2, 10);
+    });
+
+    it("should throttle optimization by keyframe interval", () => {
+      const backend = createBackend();
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        {
+          mapInitializer,
+          landmarkMap,
+          pnpSolver,
+          bundleAdjustment: backend as never,
+        },
+        { bundleAdjustmentInterval: 2 }
+      );
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100); // first keyframe
+
+      expect(backend.addKeyframe).toHaveBeenCalledOnce();
+      expect(backend.optimize).not.toHaveBeenCalled();
+    });
+  });
+
   describe("reset", () => {
     it("should clear the map and reference frame", () => {
       const { tracker, landmarkMap, mapInitializer } = createTracker({});
