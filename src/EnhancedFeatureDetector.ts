@@ -77,7 +77,7 @@ export class EnhancedFeatureDetector {
       const workerBlob = new Blob(
         [
           `
-        importScripts('https://docs.opencv.org/4.x/opencv.js');
+        importScripts('https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js');
 
         // Worker code would be injected here
         // For now, fallback to main thread

@@ -36,10 +36,15 @@ SPALAM requires the following dependencies:
 - [@huggingface/transformers](https://huggingface.co/docs/transformers.js) - Depth estimation models
 - [OpenCV.js](https://docs.opencv.org/4.x/d5/d10/tutorial_js_root.html) - Feature detection
 
-Include OpenCV.js in your HTML:
+Include OpenCV.js in your HTML (docs.opencv.org can no longer be hotlinked —
+it now serves a Cloudflare challenge with `Cross-Origin-Resource-Policy:
+same-origin` — so use the npm-mirrored build or self-host the file):
 
 ```html
-<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script
+  async
+  src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js"
+></script>
 ```
 
 ## Quick Start
