@@ -785,28 +785,35 @@ export class FeatureDetector {
         featureIdByPosition.set(positionKey(x, y), feature.id);
       }
 
-      const descriptors = new this.cv.Mat();
-      this.orbExtractor.compute(this.prevGray, keypoints, descriptors);
+      let descriptors: cv.Mat | null = null;
+      try {
+        descriptors = new this.cv.Mat();
+        this.orbExtractor.compute(this.prevGray, keypoints, descriptors);
 
-      const ids: string[] = [];
-      let aligned = true;
-      for (let i = 0; i < keypoints.size(); i++) {
-        const keypoint = keypoints.get(i);
-        const id = featureIdByPosition.get(
-          positionKey(keypoint.pt.x, keypoint.pt.y)
-        );
-        if (!id) {
-          aligned = false;
-          break;
+        const ids: string[] = [];
+        let aligned = true;
+        for (let i = 0; i < keypoints.size(); i++) {
+          const keypoint = keypoints.get(i);
+          const id = featureIdByPosition.get(
+            positionKey(keypoint.pt.x, keypoint.pt.y)
+          );
+          if (!id) {
+            aligned = false;
+            break;
+          }
+          ids.push(id);
         }
-        ids.push(id);
-      }
 
-      if (!aligned || descriptors.rows !== ids.length || ids.length === 0) {
-        descriptors.delete();
+        if (!aligned || descriptors.rows !== ids.length || ids.length === 0) {
+          descriptors.delete();
+          return null;
+        }
+        return { descriptors, ids };
+      } catch (error) {
+        descriptors?.delete();
+        console.warn("Descriptor computation failed:", error);
         return null;
       }
-      return { descriptors, ids };
     } finally {
       keypoints.delete();
     }

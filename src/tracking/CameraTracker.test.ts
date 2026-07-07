@@ -560,6 +560,8 @@ describe("CameraTracker", () => {
       );
       const relocalizationDatabase = {
         addKeyframe: vi.fn(() => true),
+        wouldAcceptPose: vi.fn(() => true),
+        clear: vi.fn(),
         size: vi.fn(() => 1),
         relocalize: vi.fn(() => ({
           pose: { ...identityPose, timestamp: 900, confidence: 0.9 },
@@ -601,6 +603,30 @@ describe("CameraTracker", () => {
       tracker.update(createFeatures(60), 100); // initializes -> keyframe
 
       expect(relocalizationDatabase.addKeyframe).toHaveBeenCalledOnce();
+    });
+
+    it("should skip descriptor extraction when the pose would be rejected", () => {
+      const { tracker, relocalizationDatabase, descriptorProvider } =
+        createTrackerWithRelocalization();
+      relocalizationDatabase.wouldAcceptPose.mockReturnValue(false);
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100);
+
+      expect(descriptorProvider).not.toHaveBeenCalled();
+      expect(relocalizationDatabase.addKeyframe).not.toHaveBeenCalled();
+    });
+
+    it("should clear stale anchors when a fresh world is initialized", () => {
+      const { tracker, relocalizationDatabase } =
+        createTrackerWithRelocalization();
+
+      tracker.update(createFeatures(60), 0);
+      tracker.update(createFeatures(60), 100); // fresh initialization
+
+      // Entries from a previous world epoch are incompatible with the new
+      // origin/scale and must not survive into it
+      expect(relocalizationDatabase.clear).toHaveBeenCalledOnce();
     });
 
     it("should recover the original world after a reset", () => {

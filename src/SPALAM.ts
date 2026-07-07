@@ -431,6 +431,12 @@ export class SPALAM implements IServiceProvider {
     new THREE.Quaternion();
   /** 平面グループが6DoFワールドへ再アンカー済みかどうか */
   private sixDofWorldAligned: boolean = false;
+  /**
+   * relocalizationによる元ワールド復帰を待機中かどうか。
+   * この間レガシーの再配置を許すと、復帰時に「オブジェクトは元の位置に
+   * ある」という前提が壊れてテレポートするため、オブジェクトを凍結する
+   */
+  private sixDofAwaitingRelocalization: boolean = false;
   /** 6DoF切替時のカメラ変換差分計算用の再利用行列 */
   private readonly reusablePreviousCameraMatrix: THREE.Matrix4 =
     new THREE.Matrix4();
@@ -1298,8 +1304,13 @@ export class SPALAM implements IServiceProvider {
           // トラッカーがリセットされるとワールド原点が変わるため、IMU整合
           // オフセットとオブジェクトの再アンカー状態を取り直す。一時的な
           // lost（リセット前）ではワールドは不変なので維持する
+          if (this.sixDofWorldAligned && this.cameraTracker.canRelocalize()) {
+            this.sixDofAwaitingRelocalization = true;
+          }
           this.sixDofImuAlignment = null;
           this.sixDofWorldAligned = false;
+        } else {
+          this.sixDofAwaitingRelocalization = false;
         }
       }
 
@@ -1464,6 +1475,11 @@ export class SPALAM implements IServiceProvider {
   private initializeCameraTracker(): void {
     if (!this.video) return;
 
+    // Defend against future restart paths: the previous components own
+    // OpenCV resources (matcher, descriptor Mats) that must be released
+    this.sixDofComponents.forEach((component) => component.dispose());
+    this.sixDofComponents = [];
+
     const intrinsics = getCameraIntrinsics(
       this.config.plane.cameraIntrinsics,
       this.video.videoWidth,
@@ -1604,7 +1620,13 @@ export class SPALAM implements IServiceProvider {
    * スケール追従は行わない。トラッカーのリセットで解除される。
    */
   private isObjectWorldFixedBySixDof(): boolean {
-    return this.cameraTracker?.isInitialized() === true && this.sixDofWorldAligned;
+    if (this.cameraTracker?.isInitialized() === true && this.sixDofWorldAligned) {
+      return true;
+    }
+    // relocalization待機中もオブジェクトを凍結する: 復帰時にワールド固定の
+    // 不変条件が成立している必要がある（レガシー再配置が動かしてしまうと
+    // 復帰の瞬間にテレポートが起きる）
+    return this.sixDofAwaitingRelocalization;
   }
 
   /**
@@ -2157,6 +2179,9 @@ export class SPALAM implements IServiceProvider {
     this.trackingStateMachine.reset();
     this.stageProfiler.reset();
     this.cameraTracker?.reset();
+    this.sixDofWorldAligned = false;
+    this.sixDofAwaitingRelocalization = false;
+    this.sixDofImuAlignment = null;
     return this;
   }
 

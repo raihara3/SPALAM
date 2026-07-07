@@ -157,7 +157,7 @@ export class CameraTracker {
   > | null;
   private readonly relocalizationDatabase: Pick<
     RelocalizationDatabase,
-    "addKeyframe" | "relocalize" | "size"
+    "addKeyframe" | "relocalize" | "size" | "wouldAcceptPose" | "clear"
   > | null;
   private readonly descriptorProvider: DescriptorProvider | null;
 
@@ -197,7 +197,7 @@ export class CameraTracker {
       /** Optional; relocalization is disabled without both of these */
       relocalizationDatabase?: Pick<
         RelocalizationDatabase,
-        "addKeyframe" | "relocalize" | "size"
+        "addKeyframe" | "relocalize" | "size" | "wouldAcceptPose" | "clear"
       >;
       descriptorProvider?: DescriptorProvider;
     },
@@ -260,6 +260,17 @@ export class CameraTracker {
    */
   public isInitialized(): boolean {
     return this.initialized;
+  }
+
+  /**
+   * Whether recovery of the current world via relocalization is possible
+   */
+  public canRelocalize(): boolean {
+    return (
+      this.relocalizationDatabase !== null &&
+      this.relocalizationDatabase.size() > 0 &&
+      this.descriptorProvider !== null
+    );
   }
 
   /**
@@ -337,6 +348,14 @@ export class CameraTracker {
     );
 
     if (attempt.success && attempt.result) {
+      // A fresh initialization defines a NEW world (new origin, new
+      // monocular scale). Anchor keyframes from the previous world are
+      // incompatible — matching them later would teleport content — so
+      // the database must not mix world epochs.
+      if (this.relocalizationDatabase && this.relocalizationDatabase.size() > 0) {
+        this.relocalizationDatabase.clear();
+      }
+
       for (const landmark of attempt.result.landmarks) {
         this.landmarkMap.addLandmark(landmark.id, landmark.position);
       }
@@ -436,10 +455,12 @@ export class CameraTracker {
       };
     }
 
-    // Bridge short gaps with constant-velocity extrapolation. The
-    // prediction horizon is clamped inside the motion model, and the
-    // confidence decays with consecutive lost frames so downstream fusion
-    // hands over to the IMU progressively.
+    // Bridge short gaps with extrapolate-then-hold: the motion model
+    // clamps its prediction horizon (default 100ms), so after the first
+    // few frames the pose freezes at the clamped prediction — a frozen
+    // pose is safer than runaway extrapolation. Confidence decays with
+    // consecutive lost frames so downstream fusion hands the orientation
+    // to the IMU progressively.
     const predicted = this.motionModel?.predictPose(timestamp) ?? null;
     if (predicted) {
       const remainingRatio =
@@ -671,6 +692,11 @@ export class CameraTracker {
     features: Feature[]
   ): void {
     if (!this.relocalizationDatabase || !this.descriptorProvider) {
+      return;
+    }
+    // Distance pre-check before the expensive descriptor extraction: in
+    // steady-state hovering, every entry would be rejected anyway
+    if (!this.relocalizationDatabase.wouldAcceptPose(pose)) {
       return;
     }
 

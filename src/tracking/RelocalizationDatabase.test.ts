@@ -107,18 +107,35 @@ describe("RelocalizationDatabase", () => {
       expect(database.size()).toBe(1);
     });
 
-    it("should evict the oldest keyframe past capacity", () => {
+    it("should evict the second-oldest keyframe past capacity, pinning the first", () => {
       const { database } = createDatabase({
         options: { maxKeyframes: 2, minKeyframeDistance: 0.1 },
       });
       const { points2D, points3D } = createPoints(20);
       const first = createDescriptorMat(20);
+      const second = createDescriptorMat(20);
       database.addKeyframe(createPose(0), first, points2D, points3D);
-      database.addKeyframe(createPose(1), createDescriptorMat(20), points2D, points3D);
+      database.addKeyframe(createPose(1), second, points2D, points3D);
       database.addKeyframe(createPose(2), createDescriptorMat(20), points2D, points3D);
 
       expect(database.size()).toBe(2);
-      expect(first.delete).toHaveBeenCalled();
+      // The first anchor covers the content placement region; it is pinned
+      expect(first.delete).not.toHaveBeenCalled();
+      expect(second.delete).toHaveBeenCalled();
+    });
+  });
+
+  describe("wouldAcceptPose", () => {
+    it("should report the spatial-diversity gate without side effects", () => {
+      const { database } = createDatabase({
+        options: { minKeyframeDistance: 0.5 },
+      });
+      const { points2D, points3D } = createPoints(20);
+      database.addKeyframe(createPose(0), createDescriptorMat(20), points2D, points3D);
+
+      expect(database.wouldAcceptPose(createPose(0.2))).toBe(false);
+      expect(database.wouldAcceptPose(createPose(1))).toBe(true);
+      expect(database.size()).toBe(1);
     });
   });
 

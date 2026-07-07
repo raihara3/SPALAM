@@ -118,16 +118,9 @@ export class RelocalizationDatabase {
       return false;
     }
 
-    // Keep entries spatially diverse: a keyframe too close to an existing
-    // one adds matching cost without adding recovery coverage
-    for (const keyframe of this.keyframes) {
-      if (
-        keyframe.pose.translation.distanceTo(pose.translation) <
-        this.minKeyframeDistance
-      ) {
-        descriptors.delete();
-        return false;
-      }
+    if (!this.wouldAcceptPose(pose)) {
+      descriptors.delete();
+      return false;
     }
 
     this.keyframes.push({
@@ -139,8 +132,30 @@ export class RelocalizationDatabase {
     });
 
     if (this.keyframes.length > this.maxKeyframes) {
-      const evicted = this.keyframes.shift();
+      // Keep the first anchor pinned: it covers the region where the
+      // content was placed, which is the most valuable recovery target.
+      // Evicting purely by age would eventually leave no anchors there.
+      const evicted = this.keyframes.splice(1, 1)[0];
       evicted?.descriptors.delete();
+    }
+    return true;
+  }
+
+  /**
+   * Cheap pre-check for the spatial-diversity gate.
+   *
+   * Callers should test this BEFORE computing descriptors: a keyframe too
+   * close to an existing one adds matching cost without adding recovery
+   * coverage, and descriptor extraction is the expensive part.
+   */
+  public wouldAcceptPose(pose: CameraPose): boolean {
+    for (const keyframe of this.keyframes) {
+      if (
+        keyframe.pose.translation.distanceTo(pose.translation) <
+        this.minKeyframeDistance
+      ) {
+        return false;
+      }
     }
     return true;
   }
@@ -160,6 +175,9 @@ export class RelocalizationDatabase {
   ): RelocalizationResult | null {
     let best: RelocalizationResult | null = null;
     let bestInlierCount = 0;
+    // A candidate this strong ends the search early; further RANSAC PnP
+    // solves would only add main-thread cost
+    const confidentInlierCount = this.minInliers * 2;
 
     for (const keyframe of this.keyframes) {
       const matches = this.matcher.matchSimple(
@@ -194,6 +212,9 @@ export class RelocalizationDatabase {
           keyframe,
           inlierMatches: pnpResult.inliers.map((index) => matches[index]),
         };
+        if (bestInlierCount >= confidentInlierCount) {
+          break;
+        }
       }
     }
 
