@@ -116,7 +116,15 @@ export interface CameraTrackerOptions {
    * inaccurate one. Default: 0.1
    */
   maxLandmarkCorrection?: number;
-  /** Frames between loop-closure correction attempts while tracking. Default: 30 */
+  /**
+   * Frames between loop-closure correction attempts while tracking.
+   * 0 disables loop closure (the default): with single-scale ORB
+   * descriptors the anchor-match pose estimate is noisier than the drift
+   * it is meant to correct, so periodic corrections inject a visible
+   * random walk (device-verified). Re-enable only after the anchor pose
+   * verification is upgraded (multi-scale descriptors, multi-anchor
+   * consistency). Default: 0
+   */
   loopClosureInterval?: number;
   /**
    * Minimum pose translation delta before a loop-closure correction is
@@ -263,7 +271,7 @@ export class CameraTracker {
     this.relocalizationInterval = options?.relocalizationInterval ?? 15;
     this.minKeyframeFeaturesForRelocalization =
       options?.minKeyframeFeaturesForRelocalization ?? 20;
-    this.loopClosureInterval = options?.loopClosureInterval ?? 30;
+    this.loopClosureInterval = options?.loopClosureInterval ?? 0;
     this.minLoopClosureCorrection = options?.minLoopClosureCorrection ?? 0.02;
     this.maxLoopClosureCorrection = options?.maxLoopClosureCorrection ?? 1.0;
   }
@@ -501,6 +509,9 @@ export class CameraTracker {
     pose: CameraPose,
     timestamp: number
   ): CameraPose {
+    if (this.loopClosureInterval <= 0) {
+      return pose;
+    }
     if (
       !this.relocalizationDatabase ||
       this.relocalizationDatabase.size() === 0 ||
