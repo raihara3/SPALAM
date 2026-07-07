@@ -146,6 +146,31 @@ describe("CameraTracker", () => {
       expect(result.initializationFailureReason).toBe("insufficient-parallax");
     });
 
+    it("should pass reference-time depth priors to initialization attempts", () => {
+      const { tracker, mapInitializer } = createTracker({
+        attempts: [
+          {
+            success: false,
+            failureReason: "insufficient-displacement",
+            correspondenceCount: 60,
+          },
+        ],
+      });
+
+      const referencePriors = new Map([["feature_0", 2.5]]);
+      tracker.update(createFeatures(60), 0, referencePriors); // sets reference
+      const laterPriors = new Map([["feature_0", 9.9]]);
+      tracker.update(createFeatures(60), 100, laterPriors);
+
+      // The attempt must receive the priors captured with the reference
+      // frame, not the ones sampled later
+      expect(mapInitializer.attemptInitialization).toHaveBeenCalledWith(
+        expect.anything(),
+        100,
+        new Map([["feature_0", 2.5]])
+      );
+    });
+
     it("should restart the reference when correspondences die out", () => {
       const { tracker, mapInitializer } = createTracker({
         attempts: [

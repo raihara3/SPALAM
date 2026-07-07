@@ -75,6 +75,7 @@ import { getEnvConfig } from "./config/environment";
 // helpers
 import { getCameraIntrinsics } from "./helpers/backProjectPoints";
 import { cameraPoseToThreeJs } from "./helpers/cameraPoseConversion";
+import sampleDepthAtFeaturePoints from "./helpers/sampleDepthAtFeaturePoints";
 
 /**
  * Fluent API用の設定ビルダー
@@ -411,6 +412,14 @@ export class SPALAM implements IServiceProvider {
   private sixDofComponents: Array<{ dispose(): void }> = [];
   /** 6DoFトラッキングのエラーログ抑制フラグ（毎フレームのログ洪水を防ぐ） */
   private sixDofErrorLogged: boolean = false;
+  /** 6DoF初期化用にキャッシュした深度マップ（初期化中のみ更新） */
+  private sixDofDepthMapCache: Float32Array | null = null;
+  /** 深度マップ取得の実行中フラグ */
+  private sixDofDepthMapFetching: boolean = false;
+  /** 深度マップの最終取得時刻（ms） */
+  private sixDofDepthMapFetchedAt: number = 0;
+  /** 深度マップ取得の最小間隔（ms） */
+  private readonly sixDofDepthMapRefreshInterval: number = 500;
   /** 初期化時の深度事前情報用の再利用Map */
   private readonly reusableDepthPriors: Map<string, number> = new Map();
 
@@ -1450,9 +1459,9 @@ export class SPALAM implements IServiceProvider {
   /**
    * 6DoF初期化用の深度事前情報を構築
    *
-   * 現状は検出済み平面の深度（P0.z）を全特徴点の粗い事前情報として使う。
-   * 特徴点ごとのニューラル深度サンプリングへの置き換えはPhase 2で行う
-   * （IMPROVEMENT_PLAN.md 1-B参照）。
+   * ニューラル深度マップを低頻度で非同期取得してキャッシュし、特徴点ごとに
+   * 空間平滑化サンプリングした値を事前情報とする。深度マップが未取得の間は
+   * 検出済み平面の深度（P0.z）を粗いフォールバックとして使う。
    */
   private buildSixDofDepthPriors(
     features: InternalFeature[]
@@ -1461,6 +1470,30 @@ export class SPALAM implements IServiceProvider {
       return undefined;
     }
 
+    this.refreshSixDofDepthMapCache();
+
+    this.reusableDepthPriors.clear();
+
+    if (this.sixDofDepthMapCache) {
+      const sampledPoints = sampleDepthAtFeaturePoints({
+        featurePoints: features,
+        depthMap: this.sixDofDepthMapCache,
+        mapWidth: this.frameProcessor.getCanvasWidth(),
+        mapHeight: this.frameProcessor.getCanvasHeight(),
+        featureWidth: this.frameProcessor.getOriginalWidth(),
+        featureHeight: this.frameProcessor.getOriginalHeight(),
+      });
+      for (const point of sampledPoints) {
+        if (point.z > 0) {
+          this.reusableDepthPriors.set(point.id, point.z);
+        }
+      }
+      if (this.reusableDepthPriors.size > 0) {
+        return this.reusableDepthPriors;
+      }
+    }
+
+    // Fallback: coarse constant prior from the detected plane depth
     const planeResult = this.stateManager.getPlaneResult();
     if (!planeResult) {
       return undefined;
@@ -1469,12 +1502,42 @@ export class SPALAM implements IServiceProvider {
     if (depth <= 0) {
       return undefined;
     }
-
-    this.reusableDepthPriors.clear();
     for (const feature of features) {
       this.reusableDepthPriors.set(feature.id, depth);
     }
     return this.reusableDepthPriors;
+  }
+
+  /**
+   * 6DoF初期化用の深度マップキャッシュを低頻度で更新
+   *
+   * 深度推論は重いため、トラッカーが未初期化の間だけ一定間隔で非同期に
+   * 取得する。フレームループはブロックしない。
+   */
+  private refreshSixDofDepthMapCache(): void {
+    const now = performance.now();
+    if (
+      this.sixDofDepthMapFetching ||
+      now - this.sixDofDepthMapFetchedAt < this.sixDofDepthMapRefreshInterval
+    ) {
+      return;
+    }
+
+    this.sixDofDepthMapFetching = true;
+    this.frameProcessor
+      .getDepthMap()
+      .then((depthMap) => {
+        if (depthMap) {
+          this.sixDofDepthMapCache = depthMap;
+        }
+      })
+      .catch(() => {
+        // Depth priors are optional; keep the previous cache or fallback
+      })
+      .finally(() => {
+        this.sixDofDepthMapFetching = false;
+        this.sixDofDepthMapFetchedAt = performance.now();
+      });
   }
 
   /**

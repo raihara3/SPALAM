@@ -104,6 +104,8 @@ export class CameraTracker {
   private consecutiveLostFrames: number = 0;
   private lastKeyframe: ReplenishmentKeyframe | null = null;
   private framesSinceKeyframe: number = 0;
+  /** Depth priors captured when the reference frame was set */
+  private referenceDepthPriors: Map<string, number> | null = null;
 
   constructor(
     dependencies: {
@@ -184,6 +186,7 @@ export class CameraTracker {
     this.consecutiveLostFrames = 0;
     this.lastKeyframe = null;
     this.framesSinceKeyframe = 0;
+    this.referenceDepthPriors = null;
     this.landmarkMap.clear();
     this.mapInitializer.reset();
   }
@@ -202,7 +205,7 @@ export class CameraTracker {
   ): CameraTrackerResult {
     if (!this.mapInitializer.hasReferenceFrame()) {
       if (features.length >= this.minReferenceFeatures) {
-        this.mapInitializer.setReferenceFrame(features, timestamp);
+        this.setReferenceFrame(features, timestamp, depthPriorByFeatureId);
       }
       return {
         status: "initializing",
@@ -213,10 +216,12 @@ export class CameraTracker {
       };
     }
 
+    // Use the priors captured at reference time: the triangulated depths
+    // they are compared against live in the reference camera frame
     const attempt = this.mapInitializer.attemptInitialization(
       features,
       timestamp,
-      depthPriorByFeatureId
+      this.referenceDepthPriors ?? undefined
     );
 
     if (attempt.success && attempt.result) {
@@ -241,7 +246,7 @@ export class CameraTracker {
       attempt.failureReason === "insufficient-correspondences" &&
       features.length >= this.minReferenceFeatures
     ) {
-      this.mapInitializer.setReferenceFrame(features, timestamp);
+      this.setReferenceFrame(features, timestamp, depthPriorByFeatureId);
     }
 
     return {
@@ -390,6 +395,17 @@ export class CameraTracker {
 
     this.setKeyframe(currentPose, features);
     return added;
+  }
+
+  private setReferenceFrame(
+    features: Feature[],
+    timestamp: number,
+    depthPriorByFeatureId?: Map<string, number>
+  ): void {
+    this.mapInitializer.setReferenceFrame(features, timestamp);
+    this.referenceDepthPriors = depthPriorByFeatureId
+      ? new Map(depthPriorByFeatureId)
+      : null;
   }
 
   private setKeyframe(pose: CameraPose, features: Feature[]): void {
