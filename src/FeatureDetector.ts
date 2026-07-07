@@ -83,8 +83,8 @@ export class FeatureDetector {
     showFeatures = false,
     disableRedetection = true,
     detectionRegion = "center",
-    forwardBackwardThreshold = 1.0,
-    grid = { rows: 6, columns: 8, maxFeaturesPerCell: 0 },
+    forwardBackwardThreshold = 0,
+    grid = null,
   }: {
     cv: typeof cv;
     video: HTMLVideoElement;
@@ -312,23 +312,23 @@ export class FeatureDetector {
     // 2) マスクを作成（"center": 中央60%×60%のみ、"full": 縁5%を除く全画面）
     // Reset mask to zeros first
     mask.setTo(new this.cv.Scalar(0));
+    // roi()が返すMatヘッダはOpenCV.jsでは明示的にdeleteが必要
+    let maskRoi: cv.Mat;
     if (this.detectionRegion === "full") {
       const marginX = Math.floor(W * 0.05);
       const marginY = Math.floor(H * 0.05);
-      mask
-        .roi(
-          new this.cv.Rect(marginX, marginY, W - marginX * 2, H - marginY * 2)
-        )
-        .setTo(new this.cv.Scalar(255));
+      maskRoi = mask.roi(
+        new this.cv.Rect(marginX, marginY, W - marginX * 2, H - marginY * 2)
+      );
     } else {
       const roiX = Math.floor(W * 0.2);
       const roiY = Math.floor(H * 0.2);
       const roiW = Math.floor(W * 0.6);
       const roiH = Math.floor(H * 0.6);
-      mask
-        .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
-        .setTo(new this.cv.Scalar(255));
+      maskRoi = mask.roi(new this.cv.Rect(roiX, roiY, roiW, roiH));
     }
+    maskRoi.setTo(new this.cv.Scalar(255));
+    maskRoi.delete();
 
     // 3) グレースケール画像を作成 - read from processing canvas (scaled)
     const src = this.cv.imread(this.processCanvas);
@@ -397,86 +397,93 @@ export class FeatureDetector {
       }
 
       // 6) オプティカルフローで追跡
-      const prevPoints = new this.cv.Mat(
-        this.prevFeatures.length,
-        1,
-        this.cv.CV_32FC2
-      );
-      for (let i = 0; i < this.prevFeatures.length; i++) {
-        prevPoints.data32F[i * 2] = this.prevFeatures[i].x;
-        prevPoints.data32F[i * 2 + 1] = this.prevFeatures[i].y;
-      }
+      // OpenCV例外時のMatリークを防ぐため、確保したMatはfinallyで解放する
+      const flowMats: cv.Mat[] = [];
+      const allocateMat = (rows?: number, cols?: number, type?: number) => {
+        const mat =
+          rows !== undefined && cols !== undefined && type !== undefined
+            ? new this.cv.Mat(rows, cols, type)
+            : new this.cv.Mat();
+        flowMats.push(mat);
+        return mat;
+      };
 
-      const nextPoints = new this.cv.Mat();
-      const status = new this.cv.Mat();
-      const err = new this.cv.Mat();
+      const trackedFeatures: Feature[] = [];
+      try {
+        const prevPoints = allocateMat(
+          this.prevFeatures.length,
+          1,
+          this.cv.CV_32FC2
+        );
+        for (let i = 0; i < this.prevFeatures.length; i++) {
+          prevPoints.data32F[i * 2] = this.prevFeatures[i].x;
+          prevPoints.data32F[i * 2 + 1] = this.prevFeatures[i].y;
+        }
 
-      this.cv.calcOpticalFlowPyrLK(
-        this.prevGray,
-        gray,
-        prevPoints,
-        nextPoints,
-        status,
-        err
-      );
-      prevPoints.delete();
-      err.delete();
+        const nextPoints = allocateMat();
+        const status = allocateMat();
+        const err = allocateMat();
 
-      // 6.5) Forward-Backwardチェック: curr → prev に逆追跡し、往復誤差が
-      //      しきい値を超える点（オクルージョン境界や繰り返しテクスチャで
-      //      別の構造に滑った点）を棄却する
-      let forwardBackwardMask: boolean[] | null = null;
-      if (this.forwardBackwardThreshold > 0) {
-        const backwardPoints = new this.cv.Mat();
-        const backwardStatus = new this.cv.Mat();
-        const backwardError = new this.cv.Mat();
         this.cv.calcOpticalFlowPyrLK(
-          gray,
           this.prevGray,
+          gray,
+          prevPoints,
           nextPoints,
-          backwardPoints,
-          backwardStatus,
-          backwardError
+          status,
+          err
         );
 
-        const backwardPositions: Array<{ x: number; y: number }> = [];
-        for (let i = 0; i < this.prevFeatures.length; i++) {
-          backwardPositions.push({
-            x: backwardPoints.data32F[i * 2],
-            y: backwardPoints.data32F[i * 2 + 1],
+        // 6.5) Forward-Backwardチェック: curr → prev に逆追跡し、往復誤差が
+        //      しきい値を超える点（オクルージョン境界や繰り返しテクスチャで
+        //      別の構造に滑った点）を棄却する
+        let forwardBackwardMask: boolean[] | null = null;
+        if (this.forwardBackwardThreshold > 0) {
+          const backwardPoints = allocateMat();
+          const backwardStatus = allocateMat();
+          const backwardError = allocateMat();
+          this.cv.calcOpticalFlowPyrLK(
+            gray,
+            this.prevGray,
+            nextPoints,
+            backwardPoints,
+            backwardStatus,
+            backwardError
+          );
+
+          const backwardPositions: Array<{ x: number; y: number }> = [];
+          for (let i = 0; i < this.prevFeatures.length; i++) {
+            backwardPositions.push({
+              x: backwardPoints.data32F[i * 2],
+              y: backwardPoints.data32F[i * 2 + 1],
+            });
+          }
+          forwardBackwardMask = computeForwardBackwardMask({
+            previousPoints: this.prevFeatures,
+            backwardPoints: backwardPositions,
+            forwardStatus: status.data,
+            backwardStatus: backwardStatus.data,
+            threshold: this.forwardBackwardThreshold,
           });
         }
-        forwardBackwardMask = computeForwardBackwardMask({
-          previousPoints: this.prevFeatures,
-          backwardPoints: backwardPositions,
-          forwardStatus: status.data,
-          backwardStatus: backwardStatus.data,
-          threshold: this.forwardBackwardThreshold,
-        });
 
-        backwardPoints.delete();
-        backwardStatus.delete();
-        backwardError.delete();
-      }
-
-      // 追跡結果を配列に変換
-      const trackedFeatures: Feature[] = [];
-      for (let i = 0; i < status.rows; i++) {
-        const isTracked = forwardBackwardMask
-          ? forwardBackwardMask[i]
-          : status.data[i] === 1;
-        if (isTracked) {
-          // 追跡成功
-          trackedFeatures.push({
-            x: nextPoints.data32F[i * 2],
-            y: nextPoints.data32F[i * 2 + 1],
-            trackingCount: this.prevFeatures[i].trackingCount + 1,
-            id: this.prevFeatures[i].id,
-          });
+        // 追跡結果を配列に変換
+        for (let i = 0; i < status.rows; i++) {
+          const isTracked = forwardBackwardMask
+            ? forwardBackwardMask[i]
+            : status.data[i] === 1;
+          if (isTracked) {
+            // 追跡成功
+            trackedFeatures.push({
+              x: nextPoints.data32F[i * 2],
+              y: nextPoints.data32F[i * 2 + 1],
+              trackingCount: this.prevFeatures[i].trackingCount + 1,
+              id: this.prevFeatures[i].id,
+            });
+          }
         }
+      } finally {
+        flowMats.forEach((mat) => mat.delete());
       }
-      nextPoints.delete();
-      status.delete();
 
       // 7) 追跡点が少なければ追加検出（disableRedetection が true の場合はスキップ）
       if (

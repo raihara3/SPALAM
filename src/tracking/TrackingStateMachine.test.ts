@@ -48,13 +48,19 @@ describe("TrackingStateMachine", () => {
       expect(machine.transition("tracking", "relocalized")).toBe(true);
     });
 
-    it("should allow freezing from tracking and degraded but not from lost", () => {
+    it("should allow freezing from active states", () => {
       machine.transition("initializing", "start");
       machine.transition("tracking", "plane detected");
       expect(machine.transition("frozen", "feature drought")).toBe(true);
       expect(machine.transition("tracking", "features recovered")).toBe(true);
-      machine.transition("lost", "features lost");
+      machine.transition("degraded", "few features");
+      expect(machine.transition("frozen", "feature drought")).toBe(true);
+    });
+
+    it("should reject transitions that skip initialization", () => {
       expect(machine.transition("frozen", "invalid")).toBe(false);
+      expect(machine.transition("relocalizing", "invalid")).toBe(false);
+      expect(machine.getState()).toBe("uninitialized");
     });
   });
 

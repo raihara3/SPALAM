@@ -124,12 +124,11 @@ export class LandmarkMap {
 
     landmark.observationCount++;
     landmark.lastObservedFrame = this.currentFrame;
+    // The EMA starts from 0, so a single outlier verdict cannot push a
+    // young landmark straight past the culling threshold
     landmark.averageReprojectionError =
-      landmark.observationCount === 2
-        ? reprojectionError
-        : landmark.averageReprojectionError *
-            (1 - this.errorSmoothingAlpha) +
-          reprojectionError * this.errorSmoothingAlpha;
+      landmark.averageReprojectionError * (1 - this.errorSmoothingAlpha) +
+      reprojectionError * this.errorSmoothingAlpha;
     return true;
   }
 

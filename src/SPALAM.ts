@@ -409,6 +409,8 @@ export class SPALAM implements IServiceProvider {
   private cameraTracker: CameraTracker | null = null;
   /** 6DoFトラッキングのOpenCV依存コンポーネント（dispose用） */
   private sixDofComponents: Array<{ dispose(): void }> = [];
+  /** 6DoFトラッキングのエラーログ抑制フラグ（毎フレームのログ洪水を防ぐ） */
+  private sixDofErrorLogged: boolean = false;
   /** 初期化時の深度事前情報用の再利用Map */
   private readonly reusableDepthPriors: Map<string, number> = new Map();
 
@@ -522,13 +524,23 @@ export class SPALAM implements IServiceProvider {
           this.config.depth.showDepth,
           {
             // 6DoFトラッキングは環境全体のランドマークを必要とするため、
-            // 有効時は検出領域を全画面に切り替える
+            // 有効時は検出領域を全画面に切り替え、マップ品質のために
+            // Forward-Backwardチェックも既定で有効化する（config優先）。
+            // グリッドバケッティングは全画面検出時のみ適用し、従来の
+            // 中央ROIパイプラインの特徴点選択挙動は変えない
             detectionRegion: this.config.tracking.enableSixDof
               ? "full"
               : this.config.features.detectionRegion,
             forwardBackwardThreshold:
-              this.config.features.forwardBackwardThreshold,
-            grid: this.config.features.grid,
+              this.config.tracking.enableSixDof &&
+              this.config.features.forwardBackwardThreshold <= 0
+                ? 1.0
+                : this.config.features.forwardBackwardThreshold,
+            grid:
+              this.config.tracking.enableSixDof ||
+              this.config.features.detectionRegion === "full"
+                ? this.config.features.grid
+                : null,
           }
         );
 
@@ -1224,14 +1236,24 @@ export class SPALAM implements IServiceProvider {
       // フォールバックとして働く
       let cameraTrackerStatus: CameraTrackerStatus | null = null;
       if (this.cameraTracker) {
-        const trackerResult = this.cameraTracker.update(
-          features,
-          currentTime,
-          this.buildSixDofDepthPriors(features)
-        );
-        cameraTrackerStatus = trackerResult.status;
-        if (trackerResult.status === "tracking" && trackerResult.pose) {
-          this.applySixDofPose(trackerResult.pose);
+        // OpenCV.jsは数値/ポインタをthrowするため、例外でフレームループの
+        // 後続処理（状態機械更新やendFrame）を巻き込まないよう隔離する
+        try {
+          const trackerResult = this.cameraTracker.update(
+            features,
+            currentTime,
+            this.buildSixDofDepthPriors(features)
+          );
+          cameraTrackerStatus = trackerResult.status;
+          if (trackerResult.status === "tracking" && trackerResult.pose) {
+            this.applySixDofPose(trackerResult.pose);
+          }
+        } catch (error) {
+          cameraTrackerStatus = "lost";
+          if (!this.sixDofErrorLogged) {
+            this.sixDofErrorLogged = true;
+            console.error("6DoF camera tracking failed:", error);
+          }
         }
       }
 

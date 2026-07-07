@@ -44,6 +44,13 @@ export interface CameraTrackerOptions {
   minTrackedCorrespondences?: number;
   /** Reprojection error recorded for PnP outliers (px). Drives culling. Default: 16 */
   outlierPenaltyError?: number;
+  /**
+   * Consecutive lost frames before the tracker resets and reinitializes.
+   * Landmarks are keyed by optical-flow feature IDs, which never reappear
+   * once lost, so without this reset a lost tracker could never recover.
+   * Default: 30 (about one second at 30fps)
+   */
+  maxLostFramesBeforeReset?: number;
 }
 
 /**
@@ -66,9 +73,11 @@ export class CameraTracker {
   private readonly minReferenceFeatures: number;
   private readonly minTrackedCorrespondences: number;
   private readonly outlierPenaltyError: number;
+  private readonly maxLostFramesBeforeReset: number;
 
   private initialized: boolean = false;
   private lastPose: CameraPose | null = null;
+  private consecutiveLostFrames: number = 0;
 
   constructor(
     dependencies: {
@@ -85,6 +94,7 @@ export class CameraTracker {
     this.minReferenceFeatures = options?.minReferenceFeatures ?? 50;
     this.minTrackedCorrespondences = options?.minTrackedCorrespondences ?? 15;
     this.outlierPenaltyError = options?.outlierPenaltyError ?? 16;
+    this.maxLostFramesBeforeReset = options?.maxLostFramesBeforeReset ?? 30;
   }
 
   /**
@@ -139,6 +149,7 @@ export class CameraTracker {
   public reset(): void {
     this.initialized = false;
     this.lastPose = null;
+    this.consecutiveLostFrames = 0;
     this.landmarkMap.clear();
     this.mapInitializer.reset();
   }
@@ -212,23 +223,15 @@ export class CameraTracker {
     const correspondences = this.landmarkMap.getCorrespondences(features);
 
     if (correspondences.length < this.minTrackedCorrespondences) {
-      return {
-        status: "lost",
-        pose: null,
-        correspondenceCount: correspondences.length,
-        inlierCount: 0,
-      };
+      return this.reportLost(correspondences.length);
     }
 
     const pnpResult = this.pnpSolver.solvePnP(correspondences);
     if (!pnpResult || !pnpResult.isValid) {
-      return {
-        status: "lost",
-        pose: null,
-        correspondenceCount: correspondences.length,
-        inlierCount: 0,
-      };
+      return this.reportLost(correspondences.length);
     }
+
+    this.consecutiveLostFrames = 0;
 
     const inlierSet = new Set(pnpResult.inliers);
     correspondences.forEach((correspondence, index) => {
@@ -250,6 +253,19 @@ export class CameraTracker {
       pose,
       correspondenceCount: correspondences.length,
       inlierCount: pnpResult.inliers.length,
+    };
+  }
+
+  private reportLost(correspondenceCount: number): CameraTrackerResult {
+    this.consecutiveLostFrames++;
+    if (this.consecutiveLostFrames >= this.maxLostFramesBeforeReset) {
+      this.reset();
+    }
+    return {
+      status: "lost",
+      pose: null,
+      correspondenceCount,
+      inlierCount: 0,
     };
   }
 }

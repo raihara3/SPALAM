@@ -32,7 +32,10 @@ export const defaultConfig: SPALAMConfig = {
       height: 0.5,
     },
     detectionRegion: "center",
-    forwardBackwardThreshold: 1.0,
+    // 0 disables the check. It doubles the per-frame optical flow cost and
+    // accelerates feature depletion while redetection is disabled, so it is
+    // opt-in here; enabling 6DoF tracking turns it on (1.0) automatically.
+    forwardBackwardThreshold: 0,
     grid: {
       rows: 6,
       columns: 8,

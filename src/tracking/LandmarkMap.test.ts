@@ -56,16 +56,17 @@ describe("LandmarkMap", () => {
       const landmark = map.getLandmark("a")!;
       expect(landmark.observationCount).toBe(2);
       expect(landmark.lastObservedFrame).toBe(2);
-      expect(landmark.averageReprojectionError).toBe(1.5);
+      // EMA from 0 with the default alpha 0.3: 1.5 * 0.3 = 0.45
+      expect(landmark.averageReprojectionError).toBeCloseTo(0.45, 10);
     });
 
-    it("should smooth reprojection errors with an EMA", () => {
+    it("should smooth reprojection errors with an EMA starting from zero", () => {
       const smoothedMap = new LandmarkMap({ errorSmoothingAlpha: 0.5 });
       smoothedMap.addLandmark("a", new THREE.Vector3());
-      smoothedMap.recordObservation("a", 2); // first observation sets the value
-      smoothedMap.recordObservation("a", 4);
+      smoothedMap.recordObservation("a", 2); // 0 * 0.5 + 2 * 0.5 = 1
+      smoothedMap.recordObservation("a", 4); // 1 * 0.5 + 4 * 0.5 = 2.5
 
-      expect(smoothedMap.getLandmark("a")!.averageReprojectionError).toBe(3);
+      expect(smoothedMap.getLandmark("a")!.averageReprojectionError).toBe(2.5);
     });
 
     it("should return false for unknown IDs", () => {
@@ -183,7 +184,8 @@ describe("LandmarkMap", () => {
       const statistics = map.getStatistics();
       expect(statistics.landmarkCount).toBe(2);
       expect(statistics.currentFrame).toBe(1);
-      expect(statistics.averageReprojectionError).toBe(1);
+      // Landmark "a": EMA 2 * 0.3 = 0.6, landmark "b": 0 -> average 0.3
+      expect(statistics.averageReprojectionError).toBeCloseTo(0.3, 10);
       expect(statistics.averageObservationCount).toBe(1.5);
     });
 

@@ -102,8 +102,10 @@ export class Triangulator {
 
     // Compute P = K * [R_wc^T | t]
     const P = new this.cv.Mat();
-    this.cv.gemm(this.cameraMatrix!, Rt, 1, new this.cv.Mat(), 0, P);
+    const emptyOperand = new this.cv.Mat();
+    this.cv.gemm(this.cameraMatrix!, Rt, 1, emptyOperand, 0, P);
 
+    emptyOperand.delete();
     Rt.delete();
 
     return P;

@@ -47,12 +47,19 @@ export interface TrackingStateMachineOptions {
  */
 const ALLOWED_TRANSITIONS: Record<TrackingState, readonly TrackingState[]> = {
   uninitialized: ["initializing"],
-  initializing: ["tracking", "lost", "uninitialized"],
+  initializing: ["tracking", "degraded", "frozen", "lost", "uninitialized"],
   tracking: ["degraded", "frozen", "lost", "relocalizing", "uninitialized"],
   degraded: ["tracking", "frozen", "lost", "relocalizing", "uninitialized"],
   frozen: ["tracking", "degraded", "lost", "relocalizing", "uninitialized"],
-  lost: ["relocalizing", "tracking", "degraded", "initializing", "uninitialized"],
-  relocalizing: ["tracking", "degraded", "lost", "uninitialized"],
+  lost: [
+    "relocalizing",
+    "tracking",
+    "degraded",
+    "frozen",
+    "initializing",
+    "uninitialized",
+  ],
+  relocalizing: ["tracking", "degraded", "frozen", "lost", "uninitialized"],
 };
 
 /**

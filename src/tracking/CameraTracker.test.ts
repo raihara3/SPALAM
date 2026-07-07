@@ -207,21 +207,55 @@ describe("CameraTracker", () => {
       expect(result.pose).toBeNull();
     });
 
-    it("should record observations and cull penalized outliers", () => {
+    it("should record observations and cull repeated outliers", () => {
       const { tracker, landmarkMap } = initializeTracker({
         pnpResult: createValidPnPResult(30),
       });
 
       tracker.update(createFeatures(60), 200);
 
-      // Inlier landmark: EMA seeded with the PnP reprojection error
+      // Inlier landmark: EMA rises from 0 (default alpha 0.3)
       expect(
         landmarkMap.getLandmark("feature_0")!.averageReprojectionError
-      ).toBeCloseTo(1.2, 5);
-      // Outlier landmark (index >= 30): the penalty error exceeds the
-      // culling threshold, so it is removed from the map immediately
+      ).toBeCloseTo(0.36, 5);
+      // Outlier landmark (index >= 30): one outlier verdict elevates the
+      // EMA (16 * 0.3 = 4.8) but does not kill a young landmark
+      expect(
+        landmarkMap.getLandmark("feature_59")!.averageReprojectionError
+      ).toBeCloseTo(4.8, 5);
+
+      // A second consecutive outlier verdict pushes the EMA past the
+      // culling threshold (4.8 * 0.7 + 16 * 0.3 = 8.16 > 8)
+      tracker.update(createFeatures(60), 233);
       expect(landmarkMap.getLandmark("feature_59")).toBeNull();
-      expect(landmarkMap.size()).toBe(30);
+      expect(landmarkMap.getLandmark("feature_0")).not.toBeNull();
+    });
+
+    it("should reset and reinitialize after prolonged loss", () => {
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const tracker = new CameraTracker(
+        { mapInitializer, landmarkMap, pnpSolver },
+        { maxLostFramesBeforeReset: 2 }
+      );
+
+      tracker.update(createFeatures(60), 0); // sets reference
+      tracker.update(createFeatures(60), 100); // initializes
+      expect(tracker.isInitialized()).toBe(true);
+
+      tracker.update(createFeatures(5), 200); // lost 1
+      expect(tracker.isInitialized()).toBe(true);
+      tracker.update(createFeatures(5), 300); // lost 2 -> reset
+      expect(tracker.isInitialized()).toBe(false);
+      expect(landmarkMap.size()).toBe(0);
+
+      // The next frame with enough features restarts initialization
+      const result = tracker.update(createFeatures(60), 400);
+      expect(result.status).toBe("initializing");
+      expect(mapInitializer.setReferenceFrame).toHaveBeenCalledTimes(2);
     });
   });
 

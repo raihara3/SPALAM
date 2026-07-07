@@ -332,11 +332,14 @@ export class MapInitializer {
       scale = resolveMetricScale({ triangulatedDepths, priorDepths });
     }
 
+    // Apply the scale only when reliable; an unreliable median would warp
+    // the whole map, so unit scale (with isReliable=false reported) is safer
+    const appliedScale = scale.isReliable ? scale.scale : 1;
     const landmarks = validResults.map((result) => ({
       id: result.id!,
-      position: result.point3D.clone().multiplyScalar(scale.scale),
+      position: result.point3D.clone().multiplyScalar(appliedScale),
     }));
-    currentPose.translation.multiplyScalar(scale.scale);
+    currentPose.translation.multiplyScalar(appliedScale);
 
     return {
       success: true,
