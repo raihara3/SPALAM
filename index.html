@@ -141,9 +141,12 @@
       <p id="loading-detail"><small>カメラの使用を許可してください</small></p>
     </div>
 
+    <!-- docs.opencv.org is behind a Cloudflare challenge with
+         Cross-Origin-Resource-Policy: same-origin and can no longer be
+         hotlinked; load the npm-mirrored build via jsDelivr instead -->
     <script
       async
-      src="https://docs.opencv.org/4.10.0/opencv.js"
+      src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js"
       onload="onOpenCvReady();"
       type="text/javascript"
     ></script>

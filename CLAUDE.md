@@ -16,6 +16,11 @@ npm run dev          # Start Vite dev server on http://localhost:5173
 npm run build        # Build library + TypeScript declarations
 npm run build:types  # Build only TypeScript declarations
 
+# Testing
+npm test             # Run Vitest test suite
+npm run test:watch   # Run tests in watch mode
+npm run test:coverage # Run tests with coverage
+
 # Code Quality
 npm run lint         # Run ESLint checks
 npm run lint:fix     # Fix ESLint issues automatically
@@ -70,6 +75,14 @@ The codebase uses a service-oriented architecture with dependency injection thro
 - Convex hull computation for plane boundaries
 - Weighted plane fitting for improved accuracy
 
+### 6DoF Camera Tracking (Phase 1, opt-in)
+- Enabled via `tracking.enableSixDof` config (default: false); switches feature detection to full-frame
+- Landmark map + RANSAC PnP pipeline in `src/tracking/`: `TrackingStateMachine`, `LandmarkMap`, `MapInitializer`, `CameraTracker`
+- `CameraPose` uses the camera-to-world convention
+- Feature detection uses grid bucketing and a forward-backward LK check (config: `features.detectionRegion`, `features.forwardBackwardThreshold`, `features.grid`)
+- Per-stage frame profiling via `StageProfiler` (`src/utils/`); `getPerformanceStats()` returns real measurements
+- Public APIs: `getTrackingState()`, `getFrameBudgetStatistics()`, `getSixDofTrackingStatistics()`
+
 ### Build Configuration
 - Vite library mode with ES modules and CommonJS output
 - External dependencies: `@huggingface/transformers`, `three`
@@ -78,11 +91,11 @@ The codebase uses a service-oriented architecture with dependency injection thro
 
 ## Current Development Focus
 
-The project is in active development on the `feature/plane-tracking` branch:
-- Implementing camera motion tracking (see `SPALAM_PLAN.md`)
-- Refactoring for better modularity (see `REFACTORING_PLAN.md`)
+The project is undergoing a 6DoF tracking overhaul (see `IMPROVEMENT_PLAN.md`):
+- Phase 1 (done): tracking state machine, landmark map, gated map initialization, RANSAC PnP camera tracking (opt-in)
+- Phase 2-3 (planned): IMU fusion and anchor reconciliation with the 6DoF pose
 - Mobile performance optimizations
 
 ## Testing
 
-Currently no test framework is configured. Jest implementation is planned according to REFACTORING_PLAN.md.
+Vitest is configured (`npm test`). Test files are colocated with sources as `*.test.ts`.

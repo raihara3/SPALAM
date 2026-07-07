@@ -7,12 +7,19 @@ import * as THREE from "three";
 import type { Feature } from "./Feature";
 
 /**
- * Camera pose (extrinsic parameters) representing position and orientation
+ * Camera pose in world coordinates (camera-to-world convention).
+ *
+ * `rotation` is the camera orientation R_wc and `translation` is the camera
+ * center C in world coordinates, matching Three.js camera semantics
+ * (camera.position / camera.quaternion). The corresponding projection
+ * extrinsics are [R_wc^T | -R_wc^T * C]. Use the cameraPoseConversion
+ * helpers to convert results from recoverPose()/solvePnP(), which produce
+ * world-to-camera extrinsics.
  */
 export interface CameraPose {
-  /** Rotation matrix (3x3) */
+  /** Camera orientation in world coordinates (3x3, camera-to-world) */
   rotation: THREE.Matrix3;
-  /** Translation vector in world coordinates */
+  /** Camera center in world coordinates */
   translation: THREE.Vector3;
   /** Rotation as quaternion (derived from rotation matrix) */
   quaternion: THREE.Quaternion;
@@ -212,6 +219,8 @@ export type TrackingState =
   | "uninitialized"
   | "initializing"
   | "tracking"
+  | "degraded"
+  | "frozen"
   | "lost"
   | "relocalizing";
 

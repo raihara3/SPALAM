@@ -6,6 +6,29 @@
 // types
 import { Feature } from "./types";
 
+// helpers
+import { selectFeaturesByGrid } from "./helpers/selectFeaturesByGrid";
+import { computeForwardBackwardMask } from "./helpers/computeForwardBackwardMask";
+
+/**
+ * 特徴点検出領域
+ * - "center": 中央60%×60%のROI（従来動作）
+ * - "full":   全画面（縁5%マージンを除く）。環境全体のマップ構築用
+ */
+export type FeatureDetectionRegion = "center" | "full";
+
+/**
+ * グリッドバケッティングの設定
+ */
+export interface FeatureGridOptions {
+  /** グリッド行数 */
+  rows: number;
+  /** グリッド列数 */
+  columns: number;
+  /** セルあたり最大特徴点数（0で自動: 均等割り当ての2倍） */
+  maxFeaturesPerCell: number;
+}
+
 export class FeatureDetector {
   readonly cv: typeof cv;
   readonly video: HTMLVideoElement;
@@ -29,6 +52,9 @@ export class FeatureDetector {
   private readonly useHarrisDetector: boolean = false; // Harrisコーナー検出器を使用するかどうか
   private readonly k: number = 0.04; // Harrisコーナー検出器のパラメータ。一般的に0.04から0.06の範囲で使用される
   private readonly disableRedetection: boolean = true; // 初回検出後の再検出を無効化するか
+  private readonly detectionRegion: FeatureDetectionRegion; // 特徴点検出領域
+  private readonly forwardBackwardThreshold: number; // FBチェックの往復誤差しきい値（処理解像度px、0以下で無効）
+  private readonly grid: FeatureGridOptions | null; // グリッドバケッティング設定（nullで無効）
 
   private prevGray: cv.Mat | null = null; // 前フレームのグレースケール画像
   private prevFeatures: Feature[] = []; // 前フレームの特徴点
@@ -56,16 +82,25 @@ export class FeatureDetector {
     canvas = null,
     showFeatures = false,
     disableRedetection = true,
+    detectionRegion = "center",
+    forwardBackwardThreshold = 0,
+    grid = null,
   }: {
     cv: typeof cv;
     video: HTMLVideoElement;
     canvas?: HTMLCanvasElement | null;
     showFeatures: boolean;
     disableRedetection?: boolean;
+    detectionRegion?: FeatureDetectionRegion;
+    forwardBackwardThreshold?: number;
+    grid?: FeatureGridOptions | null;
   }) {
     this.cv = cvInstance;
     this.video = video;
     this.disableRedetection = disableRedetection;
+    this.detectionRegion = detectionRegion;
+    this.forwardBackwardThreshold = forwardBackwardThreshold;
+    this.grid = grid;
 
     // Store original dimensions for coordinate conversion
     this.originalWidth = video.videoWidth;
@@ -207,6 +242,63 @@ export class FeatureDetector {
   }
 
   /**
+   * goodFeaturesToTrackで特徴点を検出し、グリッドバケッティングで
+   * 空間分布を整えた特徴点リストを返す
+   *
+   * 姿勢推定の精度は特徴点の空間分布に強く依存するため、品質順の
+   * 候補からセルごとのクォータ内で選択して密集を抑える。
+   */
+  private detectNewFeatures(
+    gray: cv.Mat,
+    mask: cv.Mat,
+    maxCount: number
+  ): Feature[] {
+    const points = new this.cv.Mat();
+    try {
+      this.cv.goodFeaturesToTrack(
+        gray,
+        points,
+        maxCount,
+        this.qualityLevel,
+        this.minDistance,
+        mask,
+        this.blockSize,
+        this.useHarrisDetector,
+        this.k
+      );
+
+      // goodFeaturesToTrackは品質順（強い順）に返す
+      const candidates: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i < points.rows; i++) {
+        candidates.push({
+          x: points.data32F[i * 2],
+          y: points.data32F[i * 2 + 1],
+        });
+      }
+
+      const selected = this.grid
+        ? selectFeaturesByGrid(candidates, {
+            imageWidth: gray.cols,
+            imageHeight: gray.rows,
+            rows: this.grid.rows,
+            columns: this.grid.columns,
+            maxFeatures: maxCount,
+            maxFeaturesPerCell: this.grid.maxFeaturesPerCell,
+          })
+        : candidates;
+
+      return selected.map((point) => ({
+        x: point.x,
+        y: point.y,
+        trackingCount: 1,
+        id: this.generateFeatureId(),
+      }));
+    } finally {
+      points.delete();
+    }
+  }
+
+  /**
    * 画像から特徴点を検出し、前フレームの特徴点と照合
    */
   private detectAndTrackFeatures(): Feature[] {
@@ -217,16 +309,26 @@ export class FeatureDetector {
     // Get pooled Mat objects
     const { mask, gray } = this.getPooledMats(W, H);
 
-    // 2) マスクを作成（中央60%×60%だけ検出許可）
+    // 2) マスクを作成（"center": 中央60%×60%のみ、"full": 縁5%を除く全画面）
     // Reset mask to zeros first
     mask.setTo(new this.cv.Scalar(0));
-    const roiX = Math.floor(W * 0.2);
-    const roiY = Math.floor(H * 0.2);
-    const roiW = Math.floor(W * 0.6);
-    const roiH = Math.floor(H * 0.6);
-    mask
-      .roi(new this.cv.Rect(roiX, roiY, roiW, roiH))
-      .setTo(new this.cv.Scalar(255));
+    // roi()が返すMatヘッダはOpenCV.jsでは明示的にdeleteが必要
+    let maskRoi: cv.Mat;
+    if (this.detectionRegion === "full") {
+      const marginX = Math.floor(W * 0.05);
+      const marginY = Math.floor(H * 0.05);
+      maskRoi = mask.roi(
+        new this.cv.Rect(marginX, marginY, W - marginX * 2, H - marginY * 2)
+      );
+    } else {
+      const roiX = Math.floor(W * 0.2);
+      const roiY = Math.floor(H * 0.2);
+      const roiW = Math.floor(W * 0.6);
+      const roiH = Math.floor(H * 0.6);
+      maskRoi = mask.roi(new this.cv.Rect(roiX, roiY, roiW, roiH));
+    }
+    maskRoi.setTo(new this.cv.Scalar(255));
+    maskRoi.delete();
 
     // 3) グレースケール画像を作成 - read from processing canvas (scaled)
     const src = this.cv.imread(this.processCanvas);
@@ -248,30 +350,7 @@ export class FeatureDetector {
     try {
       // 4) 初回検出 or 追跡点不足時の特徴点検出
       if (!this.prevGray) {
-        const points = new this.cv.Mat();
-        this.cv.goodFeaturesToTrack(
-          gray,
-          points,
-          this.maxCorners,
-          this.qualityLevel,
-          this.minDistance,
-          mask, // ← マスクを渡す
-          this.blockSize,
-          this.useHarrisDetector,
-          this.k
-        );
-
-        // 特徴点を配列に変換
-        const features: Feature[] = [];
-        for (let i = 0; i < points.rows; i++) {
-          features.push({
-            x: points.data32F[i * 2],
-            y: points.data32F[i * 2 + 1],
-            trackingCount: 1,
-            id: this.generateFeatureId(),
-          });
-        }
-        points.delete();
+        const features = this.detectNewFeatures(gray, mask, this.maxCorners);
         this.prevFeatures = features;
         this.prevGray = gray.clone();
         return features;
@@ -294,29 +373,7 @@ export class FeatureDetector {
         }
 
         // 再検出を実行
-        const points = new this.cv.Mat();
-        this.cv.goodFeaturesToTrack(
-          gray,
-          points,
-          this.maxCorners,
-          this.qualityLevel,
-          this.minDistance,
-          mask,
-          this.blockSize,
-          this.useHarrisDetector,
-          this.k
-        );
-
-        const features: Feature[] = [];
-        for (let i = 0; i < points.rows; i++) {
-          features.push({
-            x: points.data32F[i * 2],
-            y: points.data32F[i * 2 + 1],
-            trackingCount: 1,
-            id: this.generateFeatureId(),
-          });
-        }
-        points.delete();
+        const features = this.detectNewFeatures(gray, mask, this.maxCorners);
 
         // 特徴点が検出された場合のみ状態をリセット
         if (features.length > 0) {
@@ -340,74 +397,106 @@ export class FeatureDetector {
       }
 
       // 6) オプティカルフローで追跡
-      const prevPoints = new this.cv.Mat(
-        this.prevFeatures.length,
-        1,
-        this.cv.CV_32FC2
-      );
-      for (let i = 0; i < this.prevFeatures.length; i++) {
-        prevPoints.data32F[i * 2] = this.prevFeatures[i].x;
-        prevPoints.data32F[i * 2 + 1] = this.prevFeatures[i].y;
-      }
+      // OpenCV例外時のMatリークを防ぐため、確保したMatはfinallyで解放する
+      const flowMats: cv.Mat[] = [];
+      const allocateMat = (rows?: number, cols?: number, type?: number) => {
+        const mat =
+          rows !== undefined && cols !== undefined && type !== undefined
+            ? new this.cv.Mat(rows, cols, type)
+            : new this.cv.Mat();
+        flowMats.push(mat);
+        return mat;
+      };
 
-      const nextPoints = new this.cv.Mat();
-      const status = new this.cv.Mat();
-      const err = new this.cv.Mat();
-
-      this.cv.calcOpticalFlowPyrLK(
-        this.prevGray,
-        gray,
-        prevPoints,
-        nextPoints,
-        status,
-        err
-      );
-      prevPoints.delete();
-      err.delete();
-
-      // 追跡結果を配列に変換
       const trackedFeatures: Feature[] = [];
-      for (let i = 0; i < status.rows; i++) {
-        if (status.data[i] === 1) {
-          // 追跡成功
-          trackedFeatures.push({
-            x: nextPoints.data32F[i * 2],
-            y: nextPoints.data32F[i * 2 + 1],
-            trackingCount: this.prevFeatures[i].trackingCount + 1,
-            id: this.prevFeatures[i].id,
+      try {
+        const prevPoints = allocateMat(
+          this.prevFeatures.length,
+          1,
+          this.cv.CV_32FC2
+        );
+        for (let i = 0; i < this.prevFeatures.length; i++) {
+          prevPoints.data32F[i * 2] = this.prevFeatures[i].x;
+          prevPoints.data32F[i * 2 + 1] = this.prevFeatures[i].y;
+        }
+
+        const nextPoints = allocateMat();
+        const status = allocateMat();
+        const err = allocateMat();
+
+        this.cv.calcOpticalFlowPyrLK(
+          this.prevGray,
+          gray,
+          prevPoints,
+          nextPoints,
+          status,
+          err
+        );
+
+        // 6.5) Forward-Backwardチェック: curr → prev に逆追跡し、往復誤差が
+        //      しきい値を超える点（オクルージョン境界や繰り返しテクスチャで
+        //      別の構造に滑った点）を棄却する
+        let forwardBackwardMask: boolean[] | null = null;
+        if (this.forwardBackwardThreshold > 0) {
+          const backwardPoints = allocateMat();
+          const backwardStatus = allocateMat();
+          const backwardError = allocateMat();
+          this.cv.calcOpticalFlowPyrLK(
+            gray,
+            this.prevGray,
+            nextPoints,
+            backwardPoints,
+            backwardStatus,
+            backwardError
+          );
+
+          const backwardPositions: Array<{ x: number; y: number }> = [];
+          for (let i = 0; i < this.prevFeatures.length; i++) {
+            backwardPositions.push({
+              x: backwardPoints.data32F[i * 2],
+              y: backwardPoints.data32F[i * 2 + 1],
+            });
+          }
+          forwardBackwardMask = computeForwardBackwardMask({
+            previousPoints: this.prevFeatures,
+            backwardPoints: backwardPositions,
+            forwardStatus: status.data,
+            backwardStatus: backwardStatus.data,
+            threshold: this.forwardBackwardThreshold,
           });
         }
+
+        // 追跡結果を配列に変換
+        for (let i = 0; i < status.rows; i++) {
+          const isTracked = forwardBackwardMask
+            ? forwardBackwardMask[i]
+            : status.data[i] === 1;
+          if (isTracked) {
+            // 追跡成功
+            trackedFeatures.push({
+              x: nextPoints.data32F[i * 2],
+              y: nextPoints.data32F[i * 2 + 1],
+              trackingCount: this.prevFeatures[i].trackingCount + 1,
+              id: this.prevFeatures[i].id,
+            });
+          }
+        }
+      } finally {
+        flowMats.forEach((mat) => mat.delete());
       }
-      nextPoints.delete();
-      status.delete();
 
       // 7) 追跡点が少なければ追加検出（disableRedetection が true の場合はスキップ）
       if (
         !this.disableRedetection &&
         trackedFeatures.length < this.maxCorners * 0.3
       ) {
-        const points = new this.cv.Mat();
-        this.cv.goodFeaturesToTrack(
-          gray,
-          points,
-          this.maxCorners - trackedFeatures.length,
-          this.qualityLevel,
-          this.minDistance,
-          mask, // ← こちらもマスクを渡す
-          this.blockSize,
-          this.useHarrisDetector,
-          this.k
+        trackedFeatures.push(
+          ...this.detectNewFeatures(
+            gray,
+            mask,
+            this.maxCorners - trackedFeatures.length
+          )
         );
-
-        for (let i = 0; i < points.rows; i++) {
-          trackedFeatures.push({
-            x: points.data32F[i * 2],
-            y: points.data32F[i * 2 + 1],
-            trackingCount: 1,
-            id: this.generateFeatureId(),
-          });
-        }
-        points.delete();
       }
 
       // 8) フレーム更新

@@ -60,6 +60,19 @@ export interface FeatureDetectorConfig {
     /** 高さ（画像高さに対する比率） */
     height: number;
   };
+  /** 特徴点検出領域（"center": 中央60%ROI、"full": 全画面） */
+  detectionRegion: "center" | "full";
+  /** Forward-Backwardチェックの往復誤差しきい値（処理解像度px、0以下で無効） */
+  forwardBackwardThreshold: number;
+  /** グリッドバケッティングの設定 */
+  grid: {
+    /** グリッド行数 */
+    rows: number;
+    /** グリッド列数 */
+    columns: number;
+    /** セルあたり最大特徴点数（0で自動: 均等割り当ての2倍） */
+    maxFeaturesPerCell: number;
+  };
   /** 使用する特徴点検出アルゴリズム */
   algorithms: AlgorithmConfig[];
   /** アルゴリズム固有のパラメータ設定 */
@@ -193,6 +206,21 @@ export interface ARRendererConfig {
 }
 
 /**
+ * カメラトラッキングの設定
+ */
+export interface CameraTrackingConfig {
+  /**
+   * メトリック6DoFカメラトラッキング（ランドマークマップ + RANSAC PnP）を
+   * 有効にするか。有効時は特徴点検出領域が全画面に切り替わる。
+   */
+  enableSixDof: boolean;
+  /** 初期化に必要な最小対応点数 */
+  minCorrespondences: number;
+  /** トラッキング継続に必要な最小対応点数（下回るとlost） */
+  minTrackedCorrespondences: number;
+}
+
+/**
  * SPALAM全体の設定
  */
 export interface SPALAMConfig {
@@ -204,4 +232,6 @@ export interface SPALAMConfig {
   plane: PlaneEstimationConfig;
   /** ARレンダリングの設定 */
   renderer: ARRendererConfig;
+  /** カメラトラッキングの設定 */
+  tracking: CameraTrackingConfig;
 }

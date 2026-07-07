@@ -31,6 +31,16 @@ export const defaultConfig: SPALAMConfig = {
       width: 0.5,
       height: 0.5,
     },
+    detectionRegion: "center",
+    // 0 disables the check. It doubles the per-frame optical flow cost and
+    // accelerates feature depletion while redetection is disabled, so it is
+    // opt-in here; enabling 6DoF tracking turns it on (1.0) automatically.
+    forwardBackwardThreshold: 0,
+    grid: {
+      rows: 6,
+      columns: 8,
+      maxFeaturesPerCell: 0,
+    },
     algorithms: [{ algorithm: FeatureDetectionAlgorithm.SHI_TOMASI }],
     algorithmParams: {
       harris: {
@@ -121,6 +131,13 @@ export const defaultConfig: SPALAMConfig = {
       maxFPS: 30,
       adaptiveQuality: true,
     },
+  },
+  tracking: {
+    // Disabled by default until IMU fusion and anchor reconciliation are
+    // wired to the 6DoF pose (see IMPROVEMENT_PLAN.md Phase 2-3)
+    enableSixDof: false,
+    minCorrespondences: 50,
+    minTrackedCorrespondences: 15,
   },
   plane: {
     ransacIterations: 100,
@@ -248,6 +265,10 @@ export function mergeWithDefaults(
         ...defaultConfig.features.roi,
         ...(config.features?.roi || {}),
       },
+      grid: {
+        ...defaultConfig.features.grid,
+        ...(config.features?.grid || {}),
+      },
       algorithms:
         config.features?.algorithms || defaultConfig.features.algorithms,
       algorithmParams: {
@@ -288,6 +309,10 @@ export function mergeWithDefaults(
         ...defaultConfig.plane.weights,
         ...(config.plane?.weights || {}),
       },
+    },
+    tracking: {
+      ...defaultConfig.tracking,
+      ...(config.tracking || {}),
     },
     renderer: {
       ...defaultConfig.renderer,
