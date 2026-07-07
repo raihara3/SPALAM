@@ -8,6 +8,7 @@ import type { CameraPose } from "../types/Pose";
 import type { PnPSolver } from "./PnPSolver";
 import type { Triangulator } from "./Triangulator";
 import type { LocalBundleAdjustment } from "./LocalBundleAdjustment";
+import type { MotionModel } from "./MotionModel";
 import type {
   MapInitializer,
   InitializationFailureReason,
@@ -27,8 +28,15 @@ interface ReplenishmentKeyframe {
 
 /**
  * Camera tracker status
+ *
+ * "degraded" means visual tracking failed this frame but the pose is
+ * bridged by constant-velocity extrapolation (short gaps only).
  */
-export type CameraTrackerStatus = "initializing" | "tracking" | "lost";
+export type CameraTrackerStatus =
+  | "initializing"
+  | "tracking"
+  | "degraded"
+  | "lost";
 
 /**
  * Per-frame camera tracking result
@@ -123,6 +131,10 @@ export class CameraTracker {
   private readonly pnpSolver: Pick<PnPSolver, "solvePnP">;
   private readonly triangulator: Pick<Triangulator, "triangulate"> | null;
   private readonly bundleAdjustment: BundleAdjustmentBackend | null;
+  private readonly motionModel: Pick<
+    MotionModel,
+    "update" | "predictPose" | "reset"
+  > | null;
 
   private readonly minReferenceFeatures: number;
   private readonly minTrackedCorrespondences: number;
@@ -152,6 +164,8 @@ export class CameraTracker {
       triangulator?: Pick<Triangulator, "triangulate">;
       /** Optional; keyframe/landmark refinement is disabled without it */
       bundleAdjustment?: BundleAdjustmentBackend;
+      /** Optional; short-gap pose bridging is disabled without it */
+      motionModel?: Pick<MotionModel, "update" | "predictPose" | "reset">;
     },
     options?: CameraTrackerOptions
   ) {
@@ -160,6 +174,7 @@ export class CameraTracker {
     this.pnpSolver = dependencies.pnpSolver;
     this.triangulator = dependencies.triangulator ?? null;
     this.bundleAdjustment = dependencies.bundleAdjustment ?? null;
+    this.motionModel = dependencies.motionModel ?? null;
 
     this.minReferenceFeatures = options?.minReferenceFeatures ?? 50;
     this.minTrackedCorrespondences = options?.minTrackedCorrespondences ?? 15;
@@ -236,6 +251,7 @@ export class CameraTracker {
     this.landmarkMap.clear();
     this.mapInitializer.reset();
     this.bundleAdjustment?.reset();
+    this.motionModel?.reset();
   }
 
   /**
@@ -313,12 +329,12 @@ export class CameraTracker {
     const correspondences = this.landmarkMap.getCorrespondences(features);
 
     if (correspondences.length < this.minTrackedCorrespondences) {
-      return this.reportLost(correspondences.length);
+      return this.reportLost(correspondences.length, timestamp);
     }
 
     const pnpResult = this.pnpSolver.solvePnP(correspondences);
     if (!pnpResult || !pnpResult.isValid) {
-      return this.reportLost(correspondences.length);
+      return this.reportLost(correspondences.length, timestamp);
     }
 
     this.consecutiveLostFrames = 0;
@@ -342,6 +358,7 @@ export class CameraTracker {
     const confidence = inlierRatio * errorFactor;
     const pose = pnpResultToCameraPose(pnpResult, timestamp, confidence);
     this.lastPose = pose;
+    this.motionModel?.update(pose);
 
     const newLandmarkCount = this.maybeReplenishLandmarks(features, pose);
 
@@ -354,11 +371,43 @@ export class CameraTracker {
     };
   }
 
-  private reportLost(correspondenceCount: number): CameraTrackerResult {
+  private reportLost(
+    correspondenceCount: number,
+    timestamp: number
+  ): CameraTrackerResult {
     this.consecutiveLostFrames++;
     if (this.consecutiveLostFrames >= this.maxLostFramesBeforeReset) {
       this.reset();
+      return {
+        status: "lost",
+        pose: null,
+        correspondenceCount,
+        inlierCount: 0,
+        newLandmarkCount: 0,
+      };
     }
+
+    // Bridge short gaps with constant-velocity extrapolation. The
+    // prediction horizon is clamped inside the motion model, and the
+    // confidence decays with consecutive lost frames so downstream fusion
+    // hands over to the IMU progressively.
+    const predicted = this.motionModel?.predictPose(timestamp) ?? null;
+    if (predicted) {
+      const remainingRatio =
+        1 - this.consecutiveLostFrames / this.maxLostFramesBeforeReset;
+      const bridgedPose: CameraPose = {
+        ...predicted,
+        confidence: Math.max(0, predicted.confidence * remainingRatio),
+      };
+      return {
+        status: "degraded",
+        pose: bridgedPose,
+        correspondenceCount,
+        inlierCount: 0,
+        newLandmarkCount: 0,
+      };
+    }
+
     return {
       status: "lost",
       pose: null,

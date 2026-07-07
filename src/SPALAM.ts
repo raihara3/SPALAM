@@ -64,6 +64,7 @@ import {
   Triangulator,
   PnPSolver,
   LocalBundleAdjustment,
+  MotionModel,
 } from "./tracking";
 import { DeviceMotionTrackerEvent } from "./types/DeviceMotion";
 import type { TrackingState, CameraPose } from "./types/Pose";
@@ -1272,7 +1273,11 @@ export class SPALAM implements IServiceProvider {
             () => this.buildSixDofDepthPriors(features)
           );
           cameraTrackerStatus = trackerResult.status;
-          if (trackerResult.status === "tracking" && trackerResult.pose) {
+          if (
+            (trackerResult.status === "tracking" ||
+              trackerResult.status === "degraded") &&
+            trackerResult.pose
+          ) {
             this.applySixDofPose(trackerResult.pose);
           }
         } catch (error) {
@@ -1394,6 +1399,13 @@ export class SPALAM implements IServiceProvider {
       machine.transition("initializing", "bootstrapping 6DoF landmark map");
       return;
     }
+    if (cameraTrackerStatus === "degraded") {
+      machine.transition(
+        "degraded",
+        "bridging 6DoF loss with motion model extrapolation"
+      );
+      return;
+    }
     if (cameraTrackerStatus === "lost") {
       if (this.pendingReposition) {
         machine.transition(
@@ -1479,6 +1491,7 @@ export class SPALAM implements IServiceProvider {
         pnpSolver,
         triangulator,
         bundleAdjustment,
+        motionModel: new MotionModel(),
       },
       {
         minReferenceFeatures: this.config.tracking.minCorrespondences,

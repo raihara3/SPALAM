@@ -366,6 +366,76 @@ describe("CameraTracker", () => {
     });
   });
 
+  describe("short-gap bridging", () => {
+    const createTrackerWithMotionModel = () => {
+      const landmarkMap = new LandmarkMap();
+      const mapInitializer = createMockInitializer([
+        createSuccessfulAttempt(60),
+      ]);
+      const pnpSolver = { solvePnP: vi.fn(() => createValidPnPResult(50)) };
+      const motionModel = {
+        update: vi.fn(),
+        predictPose: vi.fn((timestamp: number) => ({
+          ...identityPose,
+          timestamp,
+          confidence: 0.8,
+        })),
+        reset: vi.fn(),
+      };
+      const tracker = new CameraTracker(
+        { mapInitializer, landmarkMap, pnpSolver, motionModel },
+        { maxLostFramesBeforeReset: 4 }
+      );
+      tracker.update(createFeatures(60), 0); // reference
+      tracker.update(createFeatures(60), 100); // initializes
+      return { tracker, motionModel };
+    };
+
+    it("should feed tracked poses into the motion model", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(60), 200);
+
+      expect(motionModel.update).toHaveBeenCalledOnce();
+    });
+
+    it("should bridge short losses with a decayed extrapolated pose", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      const result = tracker.update(createFeatures(5), 200);
+
+      expect(result.status).toBe("degraded");
+      expect(motionModel.predictPose).toHaveBeenCalledWith(200);
+      // Prediction confidence 0.8 decayed by (1 - 1/4) after one lost frame
+      expect(result.pose!.confidence).toBeCloseTo(0.8 * 0.75, 10);
+      expect(tracker.isInitialized()).toBe(true);
+    });
+
+    it("should decay confidence further with consecutive lost frames", () => {
+      const { tracker } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(5), 200);
+      const second = tracker.update(createFeatures(5), 233);
+
+      expect(second.status).toBe("degraded");
+      expect(second.pose!.confidence).toBeCloseTo(0.8 * 0.5, 10);
+    });
+
+    it("should still reset after prolonged loss", () => {
+      const { tracker, motionModel } = createTrackerWithMotionModel();
+
+      tracker.update(createFeatures(5), 200); // degraded 1
+      tracker.update(createFeatures(5), 233); // degraded 2
+      tracker.update(createFeatures(5), 266); // degraded 3
+      const fourth = tracker.update(createFeatures(5), 300); // reset
+
+      expect(fourth.status).toBe("lost");
+      expect(fourth.pose).toBeNull();
+      expect(tracker.isInitialized()).toBe(false);
+      expect(motionModel.reset).toHaveBeenCalled();
+    });
+  });
+
   describe("bundle adjustment integration", () => {
     const createBackend = (
       optimizedPoints: Map<string, THREE.Vector3> = new Map()
