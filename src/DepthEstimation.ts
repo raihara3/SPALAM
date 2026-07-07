@@ -31,6 +31,9 @@ export class DepthEstimation {
   depthContext: CanvasRenderingContext2D | null = null;
   isProcessing: boolean = false;
   depthMap: Float32Array | null = null;
+  /** Dimensions of the raw depth map (model output resolution, NOT the canvas size) */
+  private depthMapWidth: number = 0;
+  private depthMapHeight: number = 0;
 
   // Reusable temporary canvas for depth map rendering (prevents memory leak)
   private temporaryCanvas: HTMLCanvasElement | null = null;
@@ -290,6 +293,8 @@ export class DepthEstimation {
     const { predicted_depth } = await this.model(inputs);
     this.depthMap = predicted_depth.data;
     const [, oh, ow] = predicted_depth.dims;
+    this.depthMapWidth = ow;
+    this.depthMapHeight = oh;
 
     if (!this.depthMap) return;
 
@@ -348,5 +353,18 @@ export class DepthEstimation {
     this.isProcessing = false;
 
     return this.depthMap;
+  }
+
+  /**
+   * Get the dimensions of the raw depth map returned by getDepthMap().
+   *
+   * The raw array is at the model output resolution, not the canvas size;
+   * indexing it with canvas dimensions breaks the row stride.
+   */
+  public getDepthMapSize(): { width: number; height: number } | null {
+    if (this.depthMapWidth <= 0 || this.depthMapHeight <= 0) {
+      return null;
+    }
+    return { width: this.depthMapWidth, height: this.depthMapHeight };
   }
 }

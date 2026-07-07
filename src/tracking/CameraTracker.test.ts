@@ -158,9 +158,9 @@ describe("CameraTracker", () => {
       });
 
       const referencePriors = new Map([["feature_0", 2.5]]);
-      tracker.update(createFeatures(60), 0, referencePriors); // sets reference
+      tracker.update(createFeatures(60), 0, () => referencePriors); // sets reference
       const laterPriors = new Map([["feature_0", 9.9]]);
-      tracker.update(createFeatures(60), 100, laterPriors);
+      tracker.update(createFeatures(60), 100, () => laterPriors);
 
       // The attempt must receive the priors captured with the reference
       // frame, not the ones sampled later
@@ -380,6 +380,8 @@ describe("CameraTracker", () => {
         getMapPoint: vi.fn((id: string) =>
           mapPoints.has(id) ? { id } : undefined
         ),
+        getMapPoints: vi.fn(() => []),
+        markAsOutlier: vi.fn(),
         optimize: vi.fn(() => ({
           optimizedPoses: new Map(),
           optimizedPoints,

@@ -225,6 +225,13 @@ export class FrameProcessor {
   }
 
   /**
+   * 深度マップの実次元（モデル出力解像度）を取得
+   */
+  public getDepthMapSize(): { width: number; height: number } | null {
+    return this.depthEstimation?.getDepthMapSize() ?? null;
+  }
+
+  /**
    * 特徴点が失われているかどうかを返す
    */
   public hasLostFeatures(): boolean {

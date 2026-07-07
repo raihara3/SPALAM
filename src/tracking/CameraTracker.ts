@@ -99,6 +99,8 @@ export type BundleAdjustmentBackend = Pick<
   | "addMapPoint"
   | "addObservation"
   | "getMapPoint"
+  | "getMapPoints"
+  | "markAsOutlier"
   | "optimize"
   | "reset"
 >;
@@ -177,13 +179,15 @@ export class CameraTracker {
    *
    * @param features Tracked features in full-resolution image coordinates
    * @param timestamp Frame timestamp in milliseconds
-   * @param depthPriorByFeatureId Optional metric depth priors for scale
-   *                              resolution during initialization
+   * @param depthPriorSupplier Optional supplier of metric depth priors for
+   *                           scale resolution. Invoked only when a
+   *                           reference frame is (re)set, so callers can
+   *                           defer the sampling cost.
    */
   public update(
     features: Feature[],
     timestamp: number,
-    depthPriorByFeatureId?: Map<string, number>
+    depthPriorSupplier?: () => Map<string, number> | undefined
   ): CameraTrackerResult {
     this.landmarkMap.beginFrame();
 
@@ -191,7 +195,7 @@ export class CameraTracker {
       return this.updateInitialization(
         features,
         timestamp,
-        depthPriorByFeatureId
+        depthPriorSupplier
       );
     }
     return this.updateTracking(features, timestamp);
@@ -244,11 +248,11 @@ export class CameraTracker {
   private updateInitialization(
     features: Feature[],
     timestamp: number,
-    depthPriorByFeatureId?: Map<string, number>
+    depthPriorSupplier?: () => Map<string, number> | undefined
   ): CameraTrackerResult {
     if (!this.mapInitializer.hasReferenceFrame()) {
       if (features.length >= this.minReferenceFeatures) {
-        this.setReferenceFrame(features, timestamp, depthPriorByFeatureId);
+        this.setReferenceFrame(features, timestamp, depthPriorSupplier?.());
       }
       return {
         status: "initializing",
@@ -289,7 +293,7 @@ export class CameraTracker {
       attempt.failureReason === "insufficient-correspondences" &&
       features.length >= this.minReferenceFeatures
     ) {
-      this.setReferenceFrame(features, timestamp, depthPriorByFeatureId);
+      this.setReferenceFrame(features, timestamp, depthPriorSupplier?.());
     }
 
     return {
@@ -371,7 +375,9 @@ export class CameraTracker {
    * Without replenishment the map only shrinks after initialization
    * (culling removes landmarks, tracked features die), which bounds the
    * total tracking lifetime. New keyframes are gated on frame interval and
-   * median pixel displacement so triangulation always has real baseline.
+   * median pixel displacement; the displacement gate only confirms image
+   * motion (it cannot distinguish rotation from translation), so the
+   * actual parallax/depth validation is left to the Triangulator gates.
    *
    * @returns Number of landmarks added
    */
@@ -388,26 +394,16 @@ export class CameraTracker {
       return 0;
     }
 
-    // Candidates: features observed in the last keyframe but absent from
-    // the map (the map join is by feature ID)
-    const keyframePoints: Array<{ x: number; y: number }> = [];
-    const currentPoints: Array<{ x: number; y: number }> = [];
-    const ids: string[] = [];
+    // Cheap displacement gate first; candidate arrays are only built once
+    // it passes (this path runs every frame while the camera is static)
     const displacements: number[] = [];
     for (const feature of features) {
       const keyframePoint = this.lastKeyframe.featurePositions.get(feature.id);
-      if (!keyframePoint) {
-        continue;
+      if (keyframePoint) {
+        displacements.push(
+          Math.hypot(feature.x - keyframePoint.x, feature.y - keyframePoint.y)
+        );
       }
-      displacements.push(
-        Math.hypot(feature.x - keyframePoint.x, feature.y - keyframePoint.y)
-      );
-      if (this.landmarkMap.getLandmark(feature.id)) {
-        continue;
-      }
-      keyframePoints.push(keyframePoint);
-      currentPoints.push({ x: feature.x, y: feature.y });
-      ids.push(feature.id);
     }
 
     if (displacements.length === 0) {
@@ -421,6 +417,21 @@ export class CameraTracker {
       displacements[Math.floor(displacements.length / 2)];
     if (medianDisplacement < this.minKeyframeDisplacementPixels) {
       return 0;
+    }
+
+    // Candidates: features observed in the last keyframe but absent from
+    // the map (the map join is by feature ID)
+    const keyframePoints: Array<{ x: number; y: number }> = [];
+    const currentPoints: Array<{ x: number; y: number }> = [];
+    const ids: string[] = [];
+    for (const feature of features) {
+      const keyframePoint = this.lastKeyframe.featurePositions.get(feature.id);
+      if (!keyframePoint || this.landmarkMap.getLandmark(feature.id)) {
+        continue;
+      }
+      keyframePoints.push(keyframePoint);
+      currentPoints.push({ x: feature.x, y: feature.y });
+      ids.push(feature.id);
     }
 
     let added = 0;
@@ -529,15 +540,38 @@ export class CameraTracker {
       return;
     }
 
+    // Re-seed the backend's map point copies from the live map before
+    // optimizing. Without this, culled-and-retriangulated landmarks would
+    // be pulled back toward stale positions on every run, and the two
+    // states would drift apart into an oscillation loop.
+    for (const backendPoint of this.bundleAdjustment.getMapPoints()) {
+      const landmark = this.landmarkMap.getLandmark(backendPoint.id);
+      if (!landmark) {
+        this.bundleAdjustment.markAsOutlier(backendPoint.id);
+        continue;
+      }
+      backendPoint.position.copy(landmark.position);
+      backendPoint.isValid = true;
+    }
+
     const result = this.bundleAdjustment.optimize();
     result.optimizedPoints.forEach((position, id) => {
       const landmark = this.landmarkMap.getLandmark(id);
       if (!landmark) {
         return;
       }
+      // Numeric optimization can produce non-finite positions (e.g. from
+      // observations behind a camera); never let them into the live map
+      if (
+        !Number.isFinite(position.x) ||
+        !Number.isFinite(position.y) ||
+        !Number.isFinite(position.z)
+      ) {
+        return;
+      }
       const correction = position.clone().sub(landmark.position);
       const distance = correction.length();
-      if (distance === 0) {
+      if (distance === 0 || !Number.isFinite(distance)) {
         return;
       }
       if (distance > this.maxLandmarkCorrection) {

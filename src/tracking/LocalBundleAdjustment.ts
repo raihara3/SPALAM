@@ -199,8 +199,15 @@ export class LocalBundleAdjustment {
       };
     }
 
+    // Index keyframes once; the optimization inner loops perform many
+    // lookups and linear scans would dominate the cost
+    const keyframeById = new Map<number, Keyframe>();
+    for (const keyframe of keyframeArray) {
+      keyframeById.set(keyframe.id, keyframe);
+    }
+
     // Calculate initial cost
-    const initialCost = this.calculateTotalCost(keyframeArray, mapPointArray);
+    const initialCost = this.calculateTotalCost(keyframeById, mapPointArray);
 
     // Run Gauss-Newton optimization
     let currentCost = initialCost;
@@ -211,7 +218,7 @@ export class LocalBundleAdjustment {
       iterations++;
 
       // Optimize map points (holding poses fixed)
-      this.optimizeMapPoints(keyframeArray, mapPointArray);
+      this.optimizeMapPoints(keyframeById, mapPointArray);
 
       // Optimize poses (holding points fixed) - skip first keyframe (fixed)
       if (keyframeArray.length > 1) {
@@ -219,10 +226,14 @@ export class LocalBundleAdjustment {
       }
 
       // Calculate new cost
-      const newCost = this.calculateTotalCost(keyframeArray, mapPointArray);
+      const newCost = this.calculateTotalCost(keyframeById, mapPointArray);
 
-      // Check convergence
-      const costReduction = (currentCost - newCost) / currentCost;
+      // Check convergence (guard against zero/non-finite costs, which
+      // would make the reduction NaN and disable early termination)
+      const costReduction =
+        currentCost > 0 && Number.isFinite(currentCost)
+          ? (currentCost - newCost) / currentCost
+          : 0;
       if (Math.abs(costReduction) < this.convergenceThreshold) {
         converged = true;
         currentCost = newCost;
@@ -257,14 +268,14 @@ export class LocalBundleAdjustment {
    * Calculate total reprojection cost
    */
   private calculateTotalCost(
-    keyframes: Keyframe[],
+    keyframeById: Map<number, Keyframe>,
     mapPoints: MapPoint[]
   ): number {
     let totalCost = 0;
 
     for (const point of mapPoints) {
       for (const [keyframeId, featureIndex] of point.observations) {
-        const keyframe = keyframes.find((kf) => kf.id === keyframeId);
+        const keyframe = keyframeById.get(keyframeId);
         if (!keyframe || featureIndex >= keyframe.features.length) {
           continue;
         }
@@ -275,6 +286,12 @@ export class LocalBundleAdjustment {
           Math.pow(projected.x - feature.x, 2) +
             Math.pow(projected.y - feature.y, 2)
         );
+
+        // Points behind the camera project to Infinity; skip them instead
+        // of poisoning the cost
+        if (!Number.isFinite(error)) {
+          continue;
+        }
 
         // Huber loss
         if (error <= this.huberThreshold) {
@@ -292,9 +309,12 @@ export class LocalBundleAdjustment {
   /**
    * Optimize map point positions using Gauss-Newton
    */
-  private optimizeMapPoints(keyframes: Keyframe[], mapPoints: MapPoint[]): void {
+  private optimizeMapPoints(
+    keyframeById: Map<number, Keyframe>,
+    mapPoints: MapPoint[]
+  ): void {
     for (const point of mapPoints) {
-      const observations = this.getValidObservations(point, keyframes);
+      const observations = this.getValidObservations(point, keyframeById);
       if (observations.length < 2) {
         continue;
       }
@@ -304,12 +324,18 @@ export class LocalBundleAdjustment {
       let hessianDiag = 0;
 
       for (const obs of observations) {
-        const keyframe = keyframes.find((kf) => kf.id === obs.keyframeId)!;
+        const keyframe = keyframeById.get(obs.keyframeId)!;
         const feature = keyframe.features[obs.featureIndex];
 
         const projected = this.projectPoint(point.position, keyframe.pose);
         const errorX = projected.x - feature.x;
         const errorY = projected.y - feature.y;
+
+        // Skip observations behind the camera: Infinity errors would turn
+        // the numeric Jacobian into NaN and corrupt the point position
+        if (!Number.isFinite(errorX) || !Number.isFinite(errorY)) {
+          continue;
+        }
 
         // Compute Jacobian numerically
         const delta = 0.001;
@@ -318,6 +344,9 @@ export class LocalBundleAdjustment {
           keyframe.pose,
           delta
         );
+        if (!jacobian.every(Number.isFinite)) {
+          continue;
+        }
 
         // Accumulate gradient and Hessian approximation
         gradient.x += jacobian[0] * errorX + jacobian[1] * errorY;
@@ -333,9 +362,16 @@ export class LocalBundleAdjustment {
           jacobian[5] * jacobian[5];
       }
 
-      if (hessianDiag > 1e-10) {
+      if (hessianDiag > 1e-10 && Number.isFinite(hessianDiag)) {
         const stepSize = 1.0 / (hessianDiag + 1e-6);
-        point.position.sub(gradient.multiplyScalar(stepSize));
+        gradient.multiplyScalar(stepSize);
+        if (
+          Number.isFinite(gradient.x) &&
+          Number.isFinite(gradient.y) &&
+          Number.isFinite(gradient.z)
+        ) {
+          point.position.sub(gradient);
+        }
       }
     }
   }
@@ -371,6 +407,9 @@ export class LocalBundleAdjustment {
 
         const errorX = projected.x - feature.x;
         const errorY = projected.y - feature.y;
+        if (!Number.isFinite(errorX) || !Number.isFinite(errorY)) {
+          continue;
+        }
 
         // Approximate Jacobian for translation
         const depth = this.calculateDepth(obs.point.position, keyframe.pose);
@@ -432,12 +471,12 @@ export class LocalBundleAdjustment {
    */
   private getValidObservations(
     point: MapPoint,
-    keyframes: Keyframe[]
+    keyframeById: Map<number, Keyframe>
   ): Observation[] {
     const observations: Observation[] = [];
 
     for (const [keyframeId, featureIndex] of point.observations) {
-      const keyframe = keyframes.find((kf) => kf.id === keyframeId);
+      const keyframe = keyframeById.get(keyframeId);
       if (keyframe && featureIndex < keyframe.features.length) {
         observations.push({
           keyframeId,
