@@ -425,10 +425,12 @@ export class SPALAM implements IServiceProvider {
   private sixDofDepthMapFetchedAt: number = 0;
   /** 深度マップ取得の最小間隔（ms） */
   private readonly sixDofDepthMapRefreshInterval: number = 500;
-  /** IMU座標系から視覚ワールド座標系への回転オフセット（初期化時に推定） */
+  /** IMU座標系から視覚ワールド座標系への回転オフセット（継続再推定） */
   private sixDofImuAlignment: THREE.Quaternion | null = null;
   /** IMU姿勢整合用の再利用クォータニオン */
   private readonly reusableAlignedImuOrientation: THREE.Quaternion =
+    new THREE.Quaternion();
+  private readonly reusableTargetImuAlignment: THREE.Quaternion =
     new THREE.Quaternion();
   /** 平面グループが6DoFワールドへ再アンカー済みかどうか */
   private sixDofWorldAligned: boolean = false;
@@ -1587,10 +1589,19 @@ export class SPALAM implements IServiceProvider {
         : null;
 
     if (imuOrientation) {
+      // オフセット（IMU系→視覚ワールド系）はジャイロのヨードリフトで
+      // ゆっくり劣化する。固定のままだとIMU側へ寄せる融合が恒常的な
+      // 低速ドリフトを注入するため、視覚信頼度が高いフレームで継続的に
+      // 再推定してドリフトに追従させる
+      this.reusableTargetImuAlignment
+        .copy(quaternion)
+        .multiply(
+          this.reusableAlignedImuOrientation.copy(imuOrientation).invert()
+        );
       if (!this.sixDofImuAlignment) {
-        this.sixDofImuAlignment = quaternion
-          .clone()
-          .multiply(imuOrientation.clone().invert());
+        this.sixDofImuAlignment = this.reusableTargetImuAlignment.clone();
+      } else if (pose.confidence > 0.5) {
+        this.sixDofImuAlignment.slerp(this.reusableTargetImuAlignment, 0.1);
       }
       this.reusableAlignedImuOrientation
         .copy(this.sixDofImuAlignment)
