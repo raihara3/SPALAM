@@ -499,6 +499,14 @@ declare namespace cv {
   function BFMatcher_create(normType?: number, crossCheck?: boolean): BFMatcher;
 
   /**
+   * BFMatcher embind constructor (the form actually exposed by OpenCV.js
+   * builds; the *_create factories are generally absent)
+   */
+  const BFMatcher: {
+    new (normType?: number, crossCheck?: boolean): BFMatcher;
+  };
+
+  /**
    * Find essential matrix from corresponding points
    * @param points1 Array of N points from first image (Nx2 or Nx1x2)
    * @param points2 Array of N points from second image (Nx2 or Nx1x2)

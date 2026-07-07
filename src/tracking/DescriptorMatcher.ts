@@ -72,11 +72,21 @@ export class DescriptorMatcher {
     if (this.matcher) {
       this.matcher.delete();
     }
-    // NORM_HAMMING for binary descriptors (ORB)
-    this.matcher = this.cv.BFMatcher_create(
-      this.cv.NORM_HAMMING,
-      this.crossCheck
-    );
+    // NORM_HAMMING for binary descriptors (ORB).
+    // OpenCV.js exposes the embind constructor, not the *_create factory
+    // functions from the C++ API; keep the factory as a fallback for
+    // builds that do provide it.
+    if (typeof this.cv.BFMatcher === "function") {
+      this.matcher = new this.cv.BFMatcher(
+        this.cv.NORM_HAMMING,
+        this.crossCheck
+      );
+    } else {
+      this.matcher = this.cv.BFMatcher_create(
+        this.cv.NORM_HAMMING,
+        this.crossCheck
+      );
+    }
   }
 
   /**
