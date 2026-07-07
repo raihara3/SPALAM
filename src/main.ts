@@ -118,7 +118,17 @@ const startSPALAM = async () => {
       updateLoadingMessage("AI深度推定モデルを読み込み中...");
     }
 
-    spalam = new SPALAM();
+    // 6DoFトラッキング（ランドマークマップ + RANSAC PnP）を有効化。
+    // 無効時は旧パイプライン（向き + DistanceTrackerスケール + 特徴点追従）
+    // で動作し、スケール変動・特徴点ドリフト追従・方向のみの再配置という
+    // 既知の制約がそのまま現れる
+    spalam = new SPALAM({
+      tracking: {
+        enableSixDof: true,
+        minCorrespondences: 50,
+        minTrackedCorrespondences: 15,
+      },
+    });
 
     // 状態変更を監視
     spalam.onStateChange((event) => {
@@ -305,6 +315,36 @@ const createDebugPanel = (instance: SPALAM) => {
       instance.setDrawFeaturesEnabled(enabled);
     }),
   );
+
+  // 6DoFトラッキング診断HUD: どのリンク（初期化 / 追跡 / 復帰）で
+  // 問題が起きているかを実機で切り分けるための情報
+  const hud = document.createElement("div");
+  hud.style.cssText = `
+    background: rgba(0,0,0,0.7);
+    color: #0ff;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 5px;
+    white-space: pre;
+  `;
+  panel.appendChild(hud);
+
+  setInterval(() => {
+    const sixDof = instance.getSixDofTrackingStatistics();
+    const frame = instance.getFrameBudgetStatistics();
+    const lines = [
+      `state: ${instance.getTrackingState()}`,
+      sixDof
+        ? `6dof: ${sixDof.isInitialized ? "initialized" : "not initialized"}` +
+          `\nlandmarks: ${sixDof.landmarks.landmarkCount}` +
+          `\nreproj: ${sixDof.landmarks.averageReprojectionError.toFixed(2)}px`
+        : "6dof: disabled",
+      `fps: ${frame.fps.toFixed(1)}  frame: ${frame.averageFrameMs.toFixed(1)}ms`,
+      `over budget: ${(frame.overBudgetRatio * 100).toFixed(0)}%`,
+    ];
+    hud.textContent = lines.join("\n");
+  }, 250);
 
   document.body.appendChild(panel);
 };
