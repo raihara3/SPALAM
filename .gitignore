@@ -146,3 +146,9 @@ memo/
 
 # Entire
 .entire/
+# Tracking harness local artifacts
+tools/tracking-harness/opencv.cjs
+tools/tracking-harness/opencv.js
+tools/tracking-harness/trace.log
+tools/tracking-harness/run.log
+*.gray
